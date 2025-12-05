@@ -12,7 +12,7 @@ sudo apt update
 sudo nala install -y fastfetch
 }
 install_dependencies() {
-sudo nala install -y curl btop duf git nano bash ripgrep bash-completion tar bat tree multitail wget unzip fontconfig trash-cli zoxide
+sudo nala install -y curl btop duf git nano bash ripgrep bash-completion tar bat tree multitail wget unzip fontconfig trash-cli zoxide fzf
 }
 
 install_font() {
