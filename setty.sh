@@ -63,7 +63,7 @@ install_starship_and_fzf() {
     fi
 }
 set_starship_preset() {
-starship preset pastel-powerline -o ~/.config/starship.toml
+starship preset bracketed-segments -o ~/.config/starship.toml
 }
 copy_bashrc() {
 BASHRC_URL="https://raw.githubusercontent.com/SpikeTheDragon40k/mybashrc/refs/heads/main/.bashrc"
