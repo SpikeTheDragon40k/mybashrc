@@ -6,7 +6,7 @@ A cross‑distribution Bash environment and workstation bootstrap:
   - Navigation, listing, archive, and system aliases
   - Sensible history, completion, and prompt behavior
   - Optional integrations (`starship`, `zoxide`, `fzf`, `fastfetch`, `ripgrep`, etc.) that degrade gracefully if missing
-- **`setup-workstation.sh`** – Distro‑ and installer‑agnostic script that:
+- **`setty.sh`** – Distro‑ and installer‑agnostic script that:
   - Detects your package manager (apt/nala, dnf/yum, pacman, zypper, apk, etc.)
   - Installs core CLI tools, fonts, `starship`, `fzf`, and drops in this `.bashrc`
   - Works on Debian/Ubuntu, RHEL/Fedora/Alma/Rocky, Arch, openSUSE, Alpine, and more
@@ -30,7 +30,7 @@ Designed to give you a consistent, powerful terminal experience across different
    ```bash
    cd "$HOME/mybashrc"
    chmod +x setup-workstation.sh
-   ./setup-workstation.sh
+   ./setty.sh
    ```
 
    This will:
