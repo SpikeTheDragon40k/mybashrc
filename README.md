@@ -1,40 +1,48 @@
-## mybashrc
+## mybashrc & workstation setup
 
-A cross‑distribution, “batteries‑included” `.bashrc` focused on:
+A cross‑distribution Bash environment and workstation bootstrap:
 
-- Rich, opinionated aliases for navigation, listing, archives, logs, and system inspection  
-- Sensible history, completion, and prompt behavior (with `starship` and `zoxide`)  
-- Optional integrations (`fastfetch`, `ripgrep`, `trash-cli`, etc.) that degrade gracefully if missing  
+- **`.bashrc`** – Rich, opinionated shell config with:
+  - Navigation, listing, archive, and system aliases
+  - Sensible history, completion, and prompt behavior
+  - Optional integrations (`starship`, `zoxide`, `fzf`, `fastfetch`, `ripgrep`, etc.) that degrade gracefully if missing
+- **`setup-workstation.sh`** – Distro‑ and installer‑agnostic script that:
+  - Detects your package manager (apt/nala, dnf/yum, pacman, zypper, apk, etc.)
+  - Installs core CLI tools, fonts, `starship`, `fzf`, and drops in this `.bashrc`
+  - Works on Debian/Ubuntu, RHEL/Fedora/Alma/Rocky, Arch, openSUSE, Alpine, and more
 
-Designed to work on Debian/Ubuntu, RHEL/Fedora/Alma/Rocky, Arch, and others with minimal assumptions about package availability.
+Designed to give you a consistent, powerful terminal experience across different Linux distros with minimal manual setup.
 
 ***
 
-## Quick setup
+## Quick start
 
-1. **Clone or download**
+1. **Clone the repo**
 
    ```bash
    git clone https://github.com/SpikeTheDragon40k/mybashrc.git "$HOME/mybashrc"
    ```
 
-2. **Backup your current `.bashrc`**
+2. **(Optional but recommended) Run the setup script**
+
+   From the repo directory:
 
    ```bash
-   cp ~/.bashrc ~/.bashrc.backup."$(date +%Y%m%d%H%M%S)"
+   cd "$HOME/mybashrc"
+   chmod +x setup-workstation.sh
+   ./setup-workstation.sh
    ```
 
-3. **Install the new `.bashrc`**
+   This will:
+   - Detect your distro/package manager
+   - Install dependencies (tools, fonts, `starship`, `fzf`, etc.)
+   - Back up your existing `.bashrc` and install the new one
 
-   ```bash
-   ln -sf "$HOME/mybashrc/.bashrc" "$HOME/.bashrc"
-   # or, if you prefer copying:
-   # cp "$HOME/mybashrc/.bashrc" "$HOME/.bashrc"
-   ```
-
-4. **Reload your shell**
+3. **Reload your shell**
 
    ```bash
    exec bash
    # or: source ~/.bashrc
    ```
+
+
