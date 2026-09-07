@@ -29,7 +29,7 @@ Designed to give you a consistent, powerful terminal experience across different
 
    ```bash
    cd "$HOME/mybashrc"
-   chmod +x setup-workstation.sh
+   chmod +x setty.sh
    ./setty.sh
    ```
 
