@@ -101,6 +101,7 @@ if command -v nano &> /dev/null; then
     # aliases to modified commands
     alias cp='cp -i'
     alias mv='mv -i'
+    alias cat='bat'
     if command -v trash &> /dev/null; then
         alias rm='trash -v'
     else
