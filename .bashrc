@@ -186,23 +186,44 @@ alias ....='cd ../../..'
 alias .....='cd ../../../..'
 
 # aliases for multiple directory listing commands
-alias ls="ls -aFh $LS_COLOR_FLAG"  # add colors and file type extensions
-alias la='ls -Alh'                 # show hidden files
-alias lx='ls -lXBh'                # sort by extension
-alias lk='ls -lSrh'                # sort by size
-alias lc='ls -ltcrh'               # sort by change time
-alias lu='ls -lturh'               # sort by access time
-alias lr='ls -lRh'                 # recursive ls
-alias lt='ls -ltrh'                # sort by date
-alias lm='ls -alh | less'          # pipe through 'less'
-alias lw='ls -xAh'                 # wide listing format
-alias ll='ls -Fls'                 # long listing format
-alias labc='ls -lap'               # alphabetical sort
-alias lf="command ls -l | grep -v '^d'" # files only
-alias ldir="command ls -l | grep '^d'"  # directories only
-alias lla='ls -Al'                 # List and Hidden Files
-alias las='ls -A'                  # Hidden Files
-alias lls='ls -l'                  # List
+# eza when installed (note: in eza -h means --header), otherwise GNU/BSD ls
+if command -v eza &> /dev/null; then
+    alias ls='eza -lah'
+    alias la='eza -lah'                     # show hidden files
+    alias lx='eza -lah --sort=extension'    # sort by extension
+    alias lk='eza -lah --sort=size'         # sort by size
+    alias lc='eza -lah --sort=changed'      # sort by change time
+    alias lu='eza -lah --sort=accessed'     # sort by access time
+    alias lr='eza -lahR'                    # recursive ls
+    alias lt='eza -lah --sort=modified'     # sort by date
+    alias lm='eza -lah --color=always | less' # pipe through 'less'
+    alias lw='eza -a --grid'                # wide listing format
+    alias ll='eza -l'                       # long listing format
+    alias labc='eza -la --sort=name'        # alphabetical sort
+    alias lf='eza -la --only-files'         # files only
+    alias ldir='eza -la --only-dirs'        # directories only
+    alias lla='eza -la'                     # List and Hidden Files
+    alias las='eza -a'                      # Hidden Files
+    alias lls='eza -l'                      # List
+else
+    alias ls="ls -aFh $LS_COLOR_FLAG"  # add colors and file type extensions
+    alias la='ls -Alh'                 # show hidden files
+    alias lx='ls -lXBh'                # sort by extension
+    alias lk='ls -lSrh'                # sort by size
+    alias lc='ls -ltcrh'               # sort by change time
+    alias lu='ls -lturh'               # sort by access time
+    alias lr='ls -lRh'                 # recursive ls
+    alias lt='ls -ltrh'                # sort by date
+    alias lm='ls -alh | less'          # pipe through 'less'
+    alias lw='ls -xAh'                 # wide listing format
+    alias ll='ls -Fls'                 # long listing format
+    alias labc='ls -lap'               # alphabetical sort
+    alias lf="command ls -l | grep -v '^d'" # files only
+    alias ldir="command ls -l | grep '^d'"  # directories only
+    alias lla='ls -Al'                 # List and Hidden Files
+    alias las='ls -A'                  # Hidden Files
+    alias lls='ls -l'                  # List
+fi
 unset LS_COLOR_FLAG
 
 # alias chmod commands

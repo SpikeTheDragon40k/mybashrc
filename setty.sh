@@ -330,7 +330,7 @@ install_dependencies() {
     pkg_install curl git nano micro bash tar "$xz_pkg" tree wget unzip fontconfig bash-completion pciutils || true
 
     # Nice-to-have CLI tools; whatever is missing gets a fallback below
-    pkg_install btop duf ripgrep bat multitail trash-cli zoxide fzf "$notify_pkg" || true
+    pkg_install btop duf ripgrep bat eza multitail trash-cli zoxide fzf "$notify_pkg" || true
 
     # Fallbacks for EL / older releases
     if ! command_exists rg; then
@@ -338,6 +338,9 @@ install_dependencies() {
     fi
     if ! command_exists bat && ! command_exists batcat; then
         cargo_install_if_missing bat bat
+    fi
+    if ! command_exists eza; then
+        cargo_install_if_missing eza eza
     fi
     if ! command_exists zoxide; then
         print_colored "$YELLOW" "zoxide not packaged. Installing with the official installer to ~/.local/bin..."
