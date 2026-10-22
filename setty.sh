@@ -1,6 +1,6 @@
 #!/bin/sh
 # Distro- and installer-agnostic workstation setup script
-# Supports: apt/nala, dnf/yum, pacman, zypper, apk, xbps, emerge
+# Supports: apt, dnf/yum, pacman, zypper, apk, xbps, emerge
 # Author: Adriano "SpikeTheDragon" Inghingolo
 #
 # Usage: ./setty.sh [--gpu | --no-gpu] [--copy] [-y] [-h]
@@ -158,10 +158,6 @@ detect_pkg_manager() {
         exit 1
     fi
 
-    if [ "$PKG_MGR" = "apt" ] && command_exists nala; then
-        PKG_MGR="nala"
-    fi
-
     print_colored "$GREEN" "Detected package manager: $PKG_MGR (distro family: $DISTRO)"
 }
 
@@ -170,7 +166,6 @@ pkg_refresh() {
     print_colored "$BLUE" "Refreshing package lists..."
     case "$PKG_MGR" in
         apt) $SUDO apt-get update -qq ;;
-        nala) $SUDO nala update -qq ;;
         dnf) $SUDO dnf makecache -q || true ;;
         yum) $SUDO yum makecache -q || true ;;
         pacman) $SUDO pacman -Syu --noconfirm ;; # never -Sy alone: partial upgrades break Arch
@@ -184,7 +179,7 @@ pkg_refresh() {
 # --- Is a package available in the configured repos? ---
 pkg_available() {
     case "$PKG_MGR" in
-        apt|nala) apt-cache policy "$1" 2>/dev/null | grep -q 'Candidate: [^(]' ;;
+        apt) apt-cache policy "$1" 2>/dev/null | grep -q 'Candidate: [^(]' ;;
         dnf) dnf -q info "$1" >/dev/null 2>&1 ;;
         yum) yum -q info "$1" >/dev/null 2>&1 ;;
         pacman) pacman -Si "$1" >/dev/null 2>&1 ;;
@@ -222,9 +217,6 @@ pkg_install() {
     case "$PKG_MGR" in
         apt)
             $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y $to_install
-            ;;
-        nala)
-            $SUDO nala install -y $to_install
             ;;
         dnf)
             $SUDO dnf install -y $to_install
@@ -330,7 +322,7 @@ install_dependencies() {
 
     # Distro-specific package names
     case "$PKG_MGR" in
-        apt|nala) xz_pkg="xz-utils" notify_pkg="libnotify-bin" ;;
+        apt) xz_pkg="xz-utils" notify_pkg="libnotify-bin" ;;
         *) xz_pkg="xz" notify_pkg="libnotify" ;;
     esac
 
@@ -370,7 +362,7 @@ install_fastfetch() {
     fi
 
     case "$PKG_MGR" in
-        apt|nala)
+        apt)
             # Ubuntu 24.04 and Debian 12 don't package it
             if [ "$DISTRO" = "ubuntu" ] && command_exists add-apt-repository; then
                 $SUDO add-apt-repository -y ppa:zhangsongcui3371/fastfetch && pkg_refresh && pkg_install fastfetch && return 0
@@ -708,7 +700,7 @@ setup_laptop() {
 
     # AMD iGPU: Vulkan + hardware video decode (keeps video playback on the iGPU, saves battery)
     case "$PKG_MGR" in
-        apt|nala) pkg_install mesa-vulkan-drivers mesa-va-drivers vainfo || true ;;
+        apt) pkg_install mesa-vulkan-drivers mesa-va-drivers vainfo || true ;;
         dnf) pkg_install mesa-vulkan-drivers mesa-va-drivers libva-utils || true ;;
         pacman) pkg_install vulkan-radeon libva-utils || true ;;
         zypper) pkg_install libvulkan_radeon Mesa-dri libva-utils || true ;;
