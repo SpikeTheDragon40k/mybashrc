@@ -5,7 +5,7 @@ A cross‑distribution Bash environment and workstation bootstrap:
 - **`.bashrc`** – Rich, opinionated shell config with:
   - Navigation, listing, archive, and system aliases
   - Sensible history, completion, and prompt behavior
-  - Optional integrations (`starship`, `zoxide`, `fzf`, `fastfetch`, `ripgrep`, etc.) that degrade gracefully if missing
+  - Optional integrations (`starship`, `zoxide`, `fzf`, `fastfetch`, `ripgrep`, `eza`, etc.) that degrade gracefully if missing
 - **`setty.sh`** – Distro‑ and installer‑agnostic script that:
   - Detects your package manager (apt, dnf/yum, pacman, zypper, apk, etc.)
   - Installs core CLI tools, fonts, `starship`, `fzf`, `ble.sh`, and links this `.bashrc`

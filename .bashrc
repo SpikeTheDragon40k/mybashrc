@@ -186,23 +186,44 @@ alias ....='cd ../../..'
 alias .....='cd ../../../..'
 
 # aliases for multiple directory listing commands
-alias ls="ls -aFh $LS_COLOR_FLAG"  # add colors and file type extensions
-alias la='ls -Alh'                 # show hidden files
-alias lx='ls -lXBh'                # sort by extension
-alias lk='ls -lSrh'                # sort by size
-alias lc='ls -ltcrh'               # sort by change time
-alias lu='ls -lturh'               # sort by access time
-alias lr='ls -lRh'                 # recursive ls
-alias lt='ls -ltrh'                # sort by date
-alias lm='ls -alh | less'          # pipe through 'less'
-alias lw='ls -xAh'                 # wide listing format
-alias ll='ls -Fls'                 # long listing format
-alias labc='ls -lap'               # alphabetical sort
-alias lf="command ls -l | grep -v '^d'" # files only
-alias ldir="command ls -l | grep '^d'"  # directories only
-alias lla='ls -Al'                 # List and Hidden Files
-alias las='ls -A'                  # Hidden Files
-alias lls='ls -l'                  # List
+# eza when installed (note: in eza -h means --header), otherwise GNU/BSD ls
+if command -v eza &> /dev/null; then
+    alias ls='eza -lah'
+    alias la='eza -lah'                     # show hidden files
+    alias lx='eza -lah --sort=extension'    # sort by extension
+    alias lk='eza -lah --sort=size'         # sort by size
+    alias lc='eza -lah --sort=changed'      # sort by change time
+    alias lu='eza -lah --sort=accessed'     # sort by access time
+    alias lr='eza -lahR'                    # recursive ls
+    alias lt='eza -lah --sort=modified'     # sort by date
+    alias lm='eza -lah --color=always | less' # pipe through 'less'
+    alias lw='eza -a --grid'                # wide listing format
+    alias ll='eza -l'                       # long listing format
+    alias labc='eza -la --sort=name'        # alphabetical sort
+    alias lf='eza -la --only-files'         # files only
+    alias ldir='eza -la --only-dirs'        # directories only
+    alias lla='eza -la'                     # List and Hidden Files
+    alias las='eza -a'                      # Hidden Files
+    alias lls='eza -l'                      # List
+else
+    alias ls="ls -aFh $LS_COLOR_FLAG"  # add colors and file type extensions
+    alias la='ls -Alh'                 # show hidden files
+    alias lx='ls -lXBh'                # sort by extension
+    alias lk='ls -lSrh'                # sort by size
+    alias lc='ls -ltcrh'               # sort by change time
+    alias lu='ls -lturh'               # sort by access time
+    alias lr='ls -lRh'                 # recursive ls
+    alias lt='ls -ltrh'                # sort by date
+    alias lm='ls -alh | less'          # pipe through 'less'
+    alias lw='ls -xAh'                 # wide listing format
+    alias ll='ls -Fls'                 # long listing format
+    alias labc='ls -lap'               # alphabetical sort
+    alias lf="command ls -l | grep -v '^d'" # files only
+    alias ldir="command ls -l | grep '^d'"  # directories only
+    alias lla='ls -Al'                 # List and Hidden Files
+    alias las='ls -A'                  # Hidden Files
+    alias lls='ls -l'                  # List
+fi
 unset LS_COLOR_FLAG
 
 # alias chmod commands
@@ -303,26 +324,29 @@ fi
 
 # fzf key bindings (Ctrl-R history, Ctrl-T files, Alt-C cd)
 if command -v fzf &> /dev/null; then
-    if [[ ${BLE_VERSION-} ]]; then
-        # Under ble.sh use its fzf integration: fzf's own script binds
-        # emacs-editing-mode/vi-editing-mode, which ble.sh doesn't support
+    if [[ ${BLE_VERSION-} ]] && ((${_ble_version:-0} >= 400)); then
+        # ble.sh >= 0.4 has its own fzf integration
         ble-import -d integration/fzf-completion
         ble-import -d integration/fzf-key-bindings
-    elif fzf --bash &> /dev/null; then
-        eval "$(fzf --bash)"
     else
-        # fzf < 0.48 (e.g. Ubuntu 24.04, Debian 12)
-        for fzf_file in \
-            /usr/share/doc/fzf/examples/key-bindings.bash \
-            /usr/share/fzf/key-bindings.bash \
-            /usr/share/fzf/shell/key-bindings.bash \
-            "$HOME/.fzf/shell/key-bindings.bash"; do
-            if [ -f "$fzf_file" ]; then
-                . "$fzf_file"
-                break
-            fi
-        done
-        unset fzf_file
+        # fzf's script binds emacs-editing-mode/vi-editing-mode (Ctrl-Z mode toggle),
+        # which older ble.sh doesn't support: drop those lines
+        if fzf --bash &> /dev/null; then
+            eval "$(fzf --bash | grep -v 'editing-mode')"
+        else
+            # fzf < 0.48 (e.g. Ubuntu 24.04, Debian 12)
+            for fzf_file in \
+                /usr/share/doc/fzf/examples/key-bindings.bash \
+                /usr/share/fzf/key-bindings.bash \
+                /usr/share/fzf/shell/key-bindings.bash \
+                "$HOME/.fzf/shell/key-bindings.bash"; do
+                if [ -f "$fzf_file" ]; then
+                    eval "$(grep -v 'editing-mode' "$fzf_file")"
+                    break
+                fi
+            done
+            unset fzf_file
+        fi
     fi
 fi
 
