@@ -240,7 +240,7 @@ install_dependencies() {
 
     # Common packages available across most distros
     # Note: on some EL10 systems, a few of these may require EPEL/CRB or cargo fallback
-    pkg_install curl git nano bash tar tree wget unzip fontconfig bash-completion || true
+    pkg_install curl git nano bash micro tar tree wget unzip fontconfig bash-completion || true
 
     # Try to install the rest; failures will be handled by fallbacks later
     pkg_install btop duf ripgrep bat multitail trash-cli zoxide fzf 2>/dev/null || true
