@@ -86,18 +86,32 @@ bind "set completion-ignore-case on"
 # Show auto-completion list automatically, without double tab
 bind "set show-all-if-ambiguous On"
 
-# Set the default editor
-if command -v nano &> /dev/null; then
-    export EDITOR=nano
-    export VISUAL=nano
-    alias vim='nano'
-    alias vi='nano'
-    alias svi='sudo nano'
-    alias snano='sudo nano'
-elif command -v micro &> /dev/null; then
-    export EDITOR=micro
-    export VISUAL=micro
+# Set the default editor: nano or micro.
+# Keeps $EDITOR if it's already one of them (e.g. "export EDITOR=micro" in ~/.profile),
+# otherwise uses nano, then micro.
+my_editor=""
+case "${EDITOR##*/}" in
+    nano|micro) command -v "$EDITOR" &> /dev/null && my_editor="${EDITOR##*/}" ;;
+esac
+if [ -z "$my_editor" ]; then
+    for e in nano micro; do
+        if command -v "$e" &> /dev/null; then
+            my_editor="$e"
+            break
+        fi
+    done
+    unset e
 fi
+if [ -n "$my_editor" ]; then
+    export EDITOR="$my_editor"
+    export VISUAL="$my_editor"
+    alias vim="$my_editor"
+    alias vi="$my_editor"
+    alias svi="sudo $my_editor"
+fi
+unset my_editor
+command -v nano &> /dev/null && alias snano='sudo nano'
+command -v micro &> /dev/null && alias smicro='sudo micro'
 
 # Colors for ls and grep (GNU uses dircolors, BSD/macOS uses CLICOLOR)
 export CLICOLOR=1
@@ -289,7 +303,12 @@ fi
 
 # fzf key bindings (Ctrl-R history, Ctrl-T files, Alt-C cd)
 if command -v fzf &> /dev/null; then
-    if fzf --bash &> /dev/null; then
+    if [[ ${BLE_VERSION-} ]]; then
+        # Under ble.sh use its fzf integration: fzf's own script binds
+        # emacs-editing-mode/vi-editing-mode, which ble.sh doesn't support
+        ble-import -d integration/fzf-completion
+        ble-import -d integration/fzf-key-bindings
+    elif fzf --bash &> /dev/null; then
         eval "$(fzf --bash)"
     else
         # fzf < 0.48 (e.g. Ubuntu 24.04, Debian 12)
