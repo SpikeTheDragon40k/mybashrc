@@ -1,14 +1,9 @@
 #!/usr/bin/env bash
+# shellcheck shell=bash
 
 #######################################################
 # SOURCED ALIASES AND SCRIPTS BY zachbrowne.me
 #######################################################
-if command -v fastfetch &> /dev/null; then
-    # Only run fastfetch if we're in an interactive shell
-    if [[ $- == *i* ]]; then
-        fastfetch
-    fi
-fi
 
 # Source global definitions
 if [ -f /etc/bashrc ]; then
@@ -17,23 +12,40 @@ elif [ -f /etc/bash.bashrc ]; then
     . /etc/bash.bashrc
 fi
 
-# Enable bash programmable completion features in interactive shells
-if [ -f /usr/share/bash-completion/bash_completion ]; then
-    . /usr/share/bash-completion/bash_completion
-elif [ -f /etc/bash_completion ]; then
-    . /etc/bash_completion
+# Everything below only matters for interactive shells (keeps scp/rsync/scripts clean)
+[[ $- != *i* ]] && return
+
+# ble.sh must be loaded early and attached at the very end of this file
+if [ -f /usr/share/blesh/ble.sh ]; then
+    source /usr/share/blesh/ble.sh --noattach
+elif [ -f "$HOME/.local/share/blesh/ble.sh" ]; then
+    source "$HOME/.local/share/blesh/ble.sh" --noattach
 fi
+
+if command -v fastfetch &> /dev/null; then
+    fastfetch
+fi
+
+# Enable bash programmable completion features
+if ! shopt -oq posix; then
+    if [ -f /usr/share/bash-completion/bash_completion ]; then
+        . /usr/share/bash-completion/bash_completion
+    elif [ -f /etc/bash_completion ]; then
+        . /etc/bash_completion
+    fi
+fi
+
 #######################################################
 # EXPORTS
 #######################################################
 
 # Disable the bell
-if [[ $- == *i* ]]; then bind "set bell-style visible"; fi
+bind "set bell-style visible"
 
 # Expand the history size
-export HISTFILESIZE=10000
-export HISTSIZE=500
-export HISTTIMEFORMAT="%F %T" # add timestamp to history
+export HISTFILESIZE=50000
+export HISTSIZE=20000
+export HISTTIMEFORMAT="%F %T " # add timestamp to history
 
 # Don't put duplicate lines in the history and do not add lines that start with a space
 export HISTCONTROL=erasedups:ignoredups:ignorespace
@@ -42,8 +54,9 @@ export HISTCONTROL=erasedups:ignoredups:ignorespace
 shopt -s checkwinsize
 
 # Causes bash to append to history instead of overwriting it so if you start a new terminal, you have old session history
+# (keeps whatever /etc/bashrc already put in PROMPT_COMMAND, e.g. VTE's "open tab in same dir")
 shopt -s histappend
-PROMPT_COMMAND='history -a'
+PROMPT_COMMAND="history -a${PROMPT_COMMAND:+; $PROMPT_COMMAND}"
 
 # set up XDG folders
 export XDG_DATA_HOME="$HOME/.local/share"
@@ -51,18 +64,27 @@ export XDG_CONFIG_HOME="$HOME/.config"
 export XDG_STATE_HOME="$HOME/.local/state"
 export XDG_CACHE_HOME="$HOME/.cache"
 
-# Seeing as other scripts will use it might as well export it
-export LINUXTOOLBOXDIR="$HOME/linuxtoolbox"
+# PATH helpers: only add existing dirs, never add duplicates when re-sourcing
+path_prepend() { [ -d "$1" ] && case ":$PATH:" in *":$1:"*) ;; *) PATH="$1:$PATH" ;; esac; }
+path_append() { [ -d "$1" ] && case ":$PATH:" in *":$1:"*) ;; *) PATH="$PATH:$1" ;; esac; }
+path_prepend "$HOME/.cargo/bin"
+path_prepend "$HOME/.fzf/bin"
+path_prepend "$HOME/.opencode/bin"
+path_prepend "$HOME/.local/bin"
+path_append "/var/lib/flatpak/exports/bin"
+path_append "$XDG_DATA_HOME/flatpak/exports/bin"
+export PATH
+unset -f path_prepend path_append
 
 # Allow ctrl-S for history navigation (with ctrl-R)
-[[ $- == *i* ]] && stty -ixon
+stty -ixon 2>/dev/null
 
 # Ignore case on auto-completion
 # Note: bind used instead of sticking these in .inputrc
-if [[ $- == *i* ]]; then bind "set completion-ignore-case on"; fi
+bind "set completion-ignore-case on"
 
 # Show auto-completion list automatically, without double tab
-if [[ $- == *i* ]]; then bind "set show-all-if-ambiguous On"; fi
+bind "set show-all-if-ambiguous On"
 
 # Set the default editor
 if command -v nano &> /dev/null; then
@@ -72,131 +94,187 @@ if command -v nano &> /dev/null; then
     alias vi='nano'
     alias svi='sudo nano'
     alias snano='sudo nano'
-    # To have colors for ls and all grep commands such as grep, egrep and zgrep
-    export CLICOLOR=1
-    export LS_COLORS='no=00:fi=00:di=00;34:ln=01;36:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:ex=01;32:*.tar=01;31:*.tgz=01;31:*.arj=01;31:*.taz=01;31:*.lzh=01;31:*.zip=01;31:*.z=01;31:*.Z=01;31:*.gz=01;31:*.bz2=01;31:*.deb=01;31:*.rpm=01;31:*.jar=01;31:*.jpg=01;35:*.jpeg=01;35:*.gif=01;35:*.bmp=01;35:*.pbm=01;35:*.pgm=01;35:*.ppm=01;35:*.tga=01;35:*.xbm=01;35:*.xpm=01;35:*.tif=01;35:*.tiff=01;35:*.png=01;35:*.mov=01;35:*.mpg=01;35:*.mpeg=01;35:*.avi=01;35:*.fli=01;35:*.gl=01;35:*.dl=01;35:*.xcf=01;35:*.xwd=01;35:*.ogg=01;35:*.mp3=01;35:*.wav=01;35:*.xml=00;31:'
-    # Check if ripgrep is installed
-    if command -v rg &> /dev/null; then
-        # Alias grep to rg if ripgrep is installed
-        alias grep='rg'
-    else
-        # Alias grep to /usr/bin/grep with GREP_OPTIONS if ripgrep is not installed
-        alias grep="/usr/bin/grep $GREP_OPTIONS"
-    fi
-    unset GREP_OPTIONS
+elif command -v micro &> /dev/null; then
+    export EDITOR=micro
+    export VISUAL=micro
+fi
 
-    # Add an "alert" alias for long running commands.  Use like so:
-    #   sleep 10; alert
+# Colors for ls and grep (GNU uses dircolors, BSD/macOS uses CLICOLOR)
+export CLICOLOR=1
+if command -v dircolors &> /dev/null; then
+    eval "$(dircolors -b)"
+fi
+if ls --color=auto / &> /dev/null; then
+    LS_COLOR_FLAG='--color=auto'
+else
+    LS_COLOR_FLAG='-G'
+fi
+alias grep='grep --color=auto'
+
+#######################################################
+# ALIASES
+#######################################################
+
+# ripgrep shortcuts (grep stays grep: rg is not a drop-in replacement)
+if command -v rg &> /dev/null; then
+    alias rgi='rg -i'
+    alias rga='rg --hidden --glob "!.git"'
+    alias rgf='rg --files --hidden --glob "!.git"'
+fi
+
+# bat is called batcat on Debian/Ubuntu
+if ! command -v bat &> /dev/null && command -v batcat &> /dev/null; then
+    alias bat='batcat'
+fi
+if command -v bat &> /dev/null || command -v batcat &> /dev/null; then
+    alias cat='bat --paging=never'
+fi
+
+# Add an "alert" alias for long running commands.  Use like so:
+#   sleep 10; alert
+if command -v notify-send &> /dev/null; then
     alias alert='notify-send --urgency=low -i "$([ $? = 0 ] && echo terminal || echo error)" "$(history|tail -n1|sed -e '\''s/^\s*[0-9]\+\s*//;s/[;&|]\s*alert$//'\'')"'
+fi
 
-    # Edit this .bashrc file
-    alias ebrc='edit ~/.bashrc'
+# Edit this .bashrc file
+alias ebrc='${EDITOR:-nano} ~/.bashrc'
 
-    # Show help for this .bashrc file
+# Show help for this .bashrc file
+if [ -f ~/.bashrc_help ]; then
     alias hlp='less ~/.bashrc_help'
+fi
 
-    # alias to show the date
-    alias da='date "+%Y-%m-%d %A %T %Z"'
+# alias to show the date
+alias da='date "+%Y-%m-%d %A %T %Z"'
 
-    # aliases to modified commands
-    alias cp='cp -i'
-    alias mv='mv -i'
-    if command -v trash &> /dev/null; then
-        alias rm='trash -v'
-    else
-        alias rm='rm -i'  # fallback to interactive remove
+# aliases to modified commands
+alias cp='cp -i'
+alias mv='mv -i'
+if command -v trash &> /dev/null; then
+    alias rm='trash -v'
+else
+    alias rm='rm -i' # fallback to interactive remove
+fi
+alias mkdir='mkdir -p'
+alias ps='ps auxf'
+alias less='less -R'
+alias cls='clear'
+command -v apt-get &> /dev/null && alias apt-get='sudo apt-get'
+command -v multitail &> /dev/null && alias multitail='multitail --no-repeat -c'
+command -v freshclam &> /dev/null && alias freshclam='sudo freshclam'
+
+# Change directory aliases
+alias home='cd ~'
+alias cd..='cd ..'
+alias ..='cd ..'
+alias ...='cd ../..'
+alias ....='cd ../../..'
+alias .....='cd ../../../..'
+
+# aliases for multiple directory listing commands
+alias ls="ls -aFh $LS_COLOR_FLAG"  # add colors and file type extensions
+alias la='ls -Alh'                 # show hidden files
+alias lx='ls -lXBh'                # sort by extension
+alias lk='ls -lSrh'                # sort by size
+alias lc='ls -ltcrh'               # sort by change time
+alias lu='ls -lturh'               # sort by access time
+alias lr='ls -lRh'                 # recursive ls
+alias lt='ls -ltrh'                # sort by date
+alias lm='ls -alh | less'          # pipe through 'less'
+alias lw='ls -xAh'                 # wide listing format
+alias ll='ls -Fls'                 # long listing format
+alias labc='ls -lap'               # alphabetical sort
+alias lf="command ls -l | grep -v '^d'" # files only
+alias ldir="command ls -l | grep '^d'"  # directories only
+alias lla='ls -Al'                 # List and Hidden Files
+alias las='ls -A'                  # Hidden Files
+alias lls='ls -l'                  # List
+unset LS_COLOR_FLAG
+
+# alias chmod commands
+alias mx='chmod a+x'
+
+# Search command line history
+alias h="history | grep -i "
+
+# Search running processes
+alias p="command ps aux | grep -i "
+alias topcpu="command ps -eo pcpu,pid,user,args --sort=-pcpu | head -11"
+
+# Search files in the current folder
+alias f="find . | grep -i "
+
+# Count all files (recursively) in the current folder
+alias countfiles="for t in files links directories; do echo \`find . -type \${t:0:1} | wc -l\` \$t; done 2> /dev/null"
+
+# To see if a command is aliased, a file, or a built-in command
+alias checkcommand="type -t"
+
+# Show open ports
+alias openports='sudo ss -tulpn'
+
+# aliases for safe and forced reboots
+alias rebootsafe='sudo shutdown -r now'
+alias rebootforce='sudo systemctl reboot -i' # ignore inhibitors (apps blocking shutdown)
+
+# aliases to show disk space and space used in a folder
+alias diskspace="du -S | sort -n -r | less"
+alias folders='du -h --max-depth=1'
+alias folderssort='find . -maxdepth 1 -type d -print0 | xargs -0 du -sk | sort -rn'
+alias tree='tree -CAhF --dirsfirst'
+alias treed='tree -CAFd'
+alias mountedinfo='df -hT'
+
+# aliases for archives
+alias mktar='tar -cvf'
+alias mkbz2='tar -cvjf'
+alias mkgz='tar -cvzf'
+alias untar='tar -xvf'
+alias unbz2='tar -xvjf'
+alias ungz='tar -xvzf'
+
+# Show all logs in /var/log, or the systemd journal
+alias logs="sudo find /var/log -type f -exec file {} \; | grep 'text' | cut -d' ' -f1 | sed -e's/:$//g' | grep -v '[0-9]$' | xargs tail -f"
+if command -v journalctl &> /dev/null; then
+    alias jlog='sudo journalctl -f'           # follow the journal
+    alias jerr='journalctl -b -p err --no-pager' # errors since boot
+fi
+
+#######################################################
+# HYBRID GRAPHICS (AMD iGPU + NVIDIA dGPU)
+#######################################################
+
+if command -v nvidia-smi &> /dev/null; then
+    # Run a program on the NVIDIA dGPU (most distros ship prime-run, this is the fallback)
+    if ! command -v prime-run &> /dev/null; then
+        prime-run() {
+            __NV_PRIME_RENDER_OFFLOAD=1 __VK_LAYER_NV_optimus=NVIDIA_only __GLX_VENDOR_LIBRARY_NAME=nvidia "$@"
+        }
     fi
-    alias mkdir='mkdir -p'
-    alias ps='ps auxf'
-    alias less='less -R'
-    alias cls='clear'
-    alias apt-get='sudo apt-get'
-    alias multitail='multitail --no-repeat -c'
-    alias freshclam='sudo freshclam'
-    # Change directory aliases
-    alias home='cd ~'
-    alias cd..='cd ..'
-    alias ..='cd ..'
-    alias ...='cd ../..'
-    alias ....='cd ../../..'
-    alias .....='cd ../../../..'
-    alias cd='z'
-    # aliases for multiple directory listing commands
-    alias la='ls -Alh'                # show hidden files
-    alias ls='ls -aFh --color=always' # add colors and file type extensions
-    alias lx='ls -lXBh'               # sort by extension
-    alias lk='ls -lSrh'               # sort by size
-    alias lc='ls -ltcrh'              # sort by change time
-    alias lu='ls -lturh'              # sort by access time
-    alias lr='ls -lRh'                # recursive ls
-    alias lt='ls -ltrh'               # sort by date
-    alias lm='ls -alh |more'          # pipe through 'more'
-    alias lw='ls -xAh'                # wide listing format
-    alias ll='ls -Fls'                # long listing format
-    alias labc='ls -lap'              # alphabetical sort
-    alias lf="ls -l | egrep -v '^d'"  # files only
-    alias ldir="ls -l | egrep '^d'"   # directories only
-    alias lla='ls -Al'                # List and Hidden Files
-    alias las='ls -A'                 # Hidden Files
-    alias lls='ls -l'                 # List
 
-    # alias chmod commands
-    alias mx='chmod a+x'
-    alias 000='chmod -R 000'
-    alias 644='chmod -R 644'
-    alias 666='chmod -R 666'
-    alias 755='chmod -R 755'
-    alias 777='chmod -R 777'
+    # Is the dGPU asleep? Reads sysfs only, so it does not wake the GPU like nvidia-smi does
+    dgpu() {
+        local d
+        for d in /sys/bus/pci/devices/*; do
+            [ "$(cat "$d/vendor" 2>/dev/null)" = "0x10de" ] || continue
+            case "$(cat "$d/class" 2>/dev/null)" in
+                0x03*) echo "${d##*/}: $(cat "$d/power/runtime_status")" ;;
+            esac
+        done
+    }
 
-    # Search command line history
-    alias h="history | grep "
-
-    # Search running processes
-    alias p="ps aux | grep "
-    alias topcpu="/bin/ps -eo pcpu,pid,user,args | sort -k 1 -r | head -10"
-
-    # Search files in the current folder
-    alias f="find . | grep "
-
-    # Count all files (recursively) in the current folder
-    alias countfiles="for t in files links directories; do echo \`find . -type \${t:0:1} | wc -l\` \$t; done 2> /dev/null"
-
-    # To see if a command is aliased, a file, or a built-in command
-    alias checkcommand="type -t"
-
-    # Show open ports
-    alias openports='netstat -nape --inet'
-
-    # aliases for safe and forced reboots
-    alias rebootsafe='sudo shutdown -r now'
-    alias rebootforce='sudo shutdown -r -n now'
-
-    # aliases to show disk space and space used in a folder
-    alias diskspace="du -S | sort -n -r |more"
-    alias folders='du -h --max-depth=1'
-    alias folderssort='find . -maxdepth 1 -type d -print0 | xargs -0 du -sk | sort -rn'
-    alias tree='tree -CAhF --dirsfirst'
-    alias treed='tree -CAFd'
-    alias mountedinfo='df -hT'
-    # aliases for archives
-    alias mktar='tar -cvf'
-    alias mkbz2='tar -cvjf'
-    alias mkgz='tar -cvzf'
-    alias untar='tar -xvf'
-    alias unbz2='tar -xvjf'
-    alias ungz='tar -xvzf'
-
-    # Show all logs in /var/log
-    alias logs="sudo find /var/log -type f -exec file {} \; | grep 'text' | cut -d' ' -f1 | sed -e's/:$//g' | grep -v '[0-9]$' | xargs tail -f"
+    # Wakes the dGPU: use when you actually want numbers
+    alias gpus='nvidia-smi --query-gpu=name,pstate,power.draw,temperature.gpu,utilization.gpu,memory.used --format=csv'
 fi
 
-# Check if the shell is interactive
-if [[ $- == *i* ]]; then
-    # Bind Ctrl+f to insert 'zi' followed by a newline
-    bind '"\C-f":"zi\n"'
-fi
+#######################################################
+# INTEGRATIONS
+#######################################################
 
-export PATH=$PATH:"$HOME/.local/bin:$HOME/.cargo/bin:/var/lib/flatpak/exports/bin:$HOME/.local/share/flatpak/exports/bin"
+# Bitwarden SSH agent, only when its socket exists (otherwise keep the system agent)
+if [ -S "$HOME/.bitwarden-ssh-agent.sock" ]; then
+    export SSH_AUTH_SOCK="$HOME/.bitwarden-ssh-agent.sock"
+fi
 
 if command -v starship &> /dev/null; then
     eval "$(starship init bash)"
@@ -204,17 +282,35 @@ fi
 
 if command -v zoxide &> /dev/null; then
     eval "$(zoxide init bash)"
+    alias cd='z'
+    # Bind Ctrl+f to insert 'zi' followed by a newline
+    bind '"\C-f":"zi\n"'
 fi
-# Zi setup
-eval "$(zoxide init bash)"
 
-# Guard hlp alias so it only exists if the help file is present
-if [ -f ~/.bashrc_help ]; then
-    alias hlp='less ~/.bashrc_help'
+# fzf key bindings (Ctrl-R history, Ctrl-T files, Alt-C cd)
+if command -v fzf &> /dev/null; then
+    if fzf --bash &> /dev/null; then
+        eval "$(fzf --bash)"
+    else
+        # fzf < 0.48 (e.g. Ubuntu 24.04, Debian 12)
+        for fzf_file in \
+            /usr/share/doc/fzf/examples/key-bindings.bash \
+            /usr/share/fzf/key-bindings.bash \
+            /usr/share/fzf/shell/key-bindings.bash \
+            "$HOME/.fzf/shell/key-bindings.bash"; do
+            if [ -f "$fzf_file" ]; then
+                . "$fzf_file"
+                break
+            fi
+        done
+        unset fzf_file
+    fi
 fi
-export SSH_AUTH_SOCK="$HOME/.bitwarden-ssh-agent.sock"
-[[ $- == *i* ]] && source /usr/share/blesh/ble.sh
 
-# opencode
-export PATH=/home/spike/.opencode/bin:$PATH
+# Machine-specific settings that should not live in the repo
+if [ -f "$HOME/.bashrc.local" ]; then
+    . "$HOME/.bashrc.local"
+fi
 
+# Must be the last line
+[[ ${BLE_VERSION-} ]] && ble-attach
