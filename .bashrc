@@ -75,9 +75,15 @@ if command -v nano &> /dev/null; then
     # To have colors for ls and all grep commands such as grep, egrep and zgrep
     export CLICOLOR=1
     export LS_COLORS='no=00:fi=00:di=00;34:ln=01;36:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:ex=01;32:*.tar=01;31:*.tgz=01;31:*.arj=01;31:*.taz=01;31:*.lzh=01;31:*.zip=01;31:*.z=01;31:*.Z=01;31:*.gz=01;31:*.bz2=01;31:*.deb=01;31:*.rpm=01;31:*.jar=01;31:*.jpg=01;35:*.jpeg=01;35:*.gif=01;35:*.bmp=01;35:*.pbm=01;35:*.pgm=01;35:*.ppm=01;35:*.tga=01;35:*.xbm=01;35:*.xpm=01;35:*.tif=01;35:*.tiff=01;35:*.png=01;35:*.mov=01;35:*.mpg=01;35:*.mpeg=01;35:*.avi=01;35:*.fli=01;35:*.gl=01;35:*.dl=01;35:*.xcf=01;35:*.xwd=01;35:*.ogg=01;35:*.mp3=01;35:*.wav=01;35:*.xml=00;31:'
-    alias rgi='rg -i'
-    alias rga='rg --hidden --glob "!.git"'
-    alias rgf='rg --files --hidden --glob "!.git"'
+    # Check if ripgrep is installed
+    if command -v rg &> /dev/null; then
+        # Alias grep to rg if ripgrep is installed
+        alias grep='rg'
+    else
+        # Alias grep to /usr/bin/grep with GREP_OPTIONS if ripgrep is not installed
+        alias grep="/usr/bin/grep $GREP_OPTIONS"
+    fi
+    unset GREP_OPTIONS
 
     # Add an "alert" alias for long running commands.  Use like so:
     #   sleep 10; alert
@@ -95,7 +101,6 @@ if command -v nano &> /dev/null; then
     # aliases to modified commands
     alias cp='cp -i'
     alias mv='mv -i'
-    alias cat='bat'
     if command -v trash &> /dev/null; then
         alias rm='trash -v'
     else
@@ -115,6 +120,7 @@ if command -v nano &> /dev/null; then
     alias ...='cd ../..'
     alias ....='cd ../../..'
     alias .....='cd ../../../..'
+    alias cd='z'
     # aliases for multiple directory listing commands
     alias la='ls -Alh'                # show hidden files
     alias ls='ls -aFh --color=always' # add colors and file type extensions
@@ -136,6 +142,11 @@ if command -v nano &> /dev/null; then
 
     # alias chmod commands
     alias mx='chmod a+x'
+    alias 000='chmod -R 000'
+    alias 644='chmod -R 644'
+    alias 666='chmod -R 666'
+    alias 755='chmod -R 755'
+    alias 777='chmod -R 777'
 
     # Search command line history
     alias h="history | grep "
@@ -194,8 +205,16 @@ fi
 if command -v zoxide &> /dev/null; then
     eval "$(zoxide init bash)"
 fi
+# Zi setup
+eval "$(zoxide init bash)"
 
 # Guard hlp alias so it only exists if the help file is present
 if [ -f ~/.bashrc_help ]; then
     alias hlp='less ~/.bashrc_help'
 fi
+export SSH_AUTH_SOCK="$HOME/.bitwarden-ssh-agent.sock"
+[[ $- == *i* ]] && source /usr/share/blesh/ble.sh
+
+# opencode
+export PATH=/home/spike/.opencode/bin:$PATH
+
