@@ -303,26 +303,29 @@ fi
 
 # fzf key bindings (Ctrl-R history, Ctrl-T files, Alt-C cd)
 if command -v fzf &> /dev/null; then
-    if [[ ${BLE_VERSION-} ]]; then
-        # Under ble.sh use its fzf integration: fzf's own script binds
-        # emacs-editing-mode/vi-editing-mode, which ble.sh doesn't support
+    if [[ ${BLE_VERSION-} ]] && ((${_ble_version:-0} >= 400)); then
+        # ble.sh >= 0.4 has its own fzf integration
         ble-import -d integration/fzf-completion
         ble-import -d integration/fzf-key-bindings
-    elif fzf --bash &> /dev/null; then
-        eval "$(fzf --bash)"
     else
-        # fzf < 0.48 (e.g. Ubuntu 24.04, Debian 12)
-        for fzf_file in \
-            /usr/share/doc/fzf/examples/key-bindings.bash \
-            /usr/share/fzf/key-bindings.bash \
-            /usr/share/fzf/shell/key-bindings.bash \
-            "$HOME/.fzf/shell/key-bindings.bash"; do
-            if [ -f "$fzf_file" ]; then
-                . "$fzf_file"
-                break
-            fi
-        done
-        unset fzf_file
+        # fzf's script binds emacs-editing-mode/vi-editing-mode (Ctrl-Z mode toggle),
+        # which older ble.sh doesn't support: drop those lines
+        if fzf --bash &> /dev/null; then
+            eval "$(fzf --bash | grep -v 'editing-mode')"
+        else
+            # fzf < 0.48 (e.g. Ubuntu 24.04, Debian 12)
+            for fzf_file in \
+                /usr/share/doc/fzf/examples/key-bindings.bash \
+                /usr/share/fzf/key-bindings.bash \
+                /usr/share/fzf/shell/key-bindings.bash \
+                "$HOME/.fzf/shell/key-bindings.bash"; do
+                if [ -f "$fzf_file" ]; then
+                    eval "$(grep -v 'editing-mode' "$fzf_file")"
+                    break
+                fi
+            done
+            unset fzf_file
+        fi
     fi
 fi
 
