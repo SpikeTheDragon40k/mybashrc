@@ -7,7 +7,7 @@ A cross‑distribution Bash environment and workstation bootstrap:
   - Sensible history, completion, and prompt behavior
   - Optional integrations (`starship`, `zoxide`, `fzf`, `fastfetch`, `ripgrep`, etc.) that degrade gracefully if missing
 - **`setty.sh`** – Distro‑ and installer‑agnostic script that:
-  - Detects your package manager (apt/nala, dnf/yum, pacman, zypper, apk, etc.)
+  - Detects your package manager (apt, dnf/yum, pacman, zypper, apk, etc.)
   - Installs core CLI tools, fonts, `starship`, `fzf`, `ble.sh`, and links this `.bashrc`
   - Skips packages your distro doesn't have instead of failing, with fallbacks (official installers, cargo)
   - On laptops: `fwupd`, `nvtop`, Mesa Vulkan/VA-API for the AMD iGPU, power profiles
