@@ -268,6 +268,16 @@ alias untar='tar -xvf'
 alias unbz2='tar -xvjf'
 alias ungz='tar -xvzf'
 
+# Copy with a progress bar; rerun after an interruption to resume where it stopped.
+# Usage: cpr SOURCE... DEST  (falls back to plain cp -r without rsync)
+cpr() {
+    if command -v rsync &> /dev/null; then
+        rsync -ah --partial --info=progress2 "$@"
+    else
+        command cp -r "$@"
+    fi
+}
+
 # Show all logs in /var/log, or the systemd journal
 alias logs="sudo find /var/log -type f -exec file {} \; | grep 'text' | cut -d' ' -f1 | sed -e's/:$//g' | grep -v '[0-9]$' | xargs tail -f"
 if command -v journalctl &> /dev/null; then

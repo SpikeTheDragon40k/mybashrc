@@ -327,7 +327,7 @@ install_dependencies() {
     esac
 
     # Basics (also needed by the rest of this script)
-    pkg_install curl git nano micro bash tar "$xz_pkg" tree wget unzip fontconfig bash-completion pciutils || true
+    pkg_install curl git nano micro bash tar "$xz_pkg" tree wget unzip rsync fontconfig bash-completion pciutils || true
 
     # Nice-to-have CLI tools; whatever is missing gets a fallback below
     pkg_install btop duf ripgrep bat eza multitail trash-cli zoxide fzf "$notify_pkg" || true
