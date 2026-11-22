@@ -1,0 +1,812 @@
+#!/usr/bin/env bash
+# archup — gather, check, resolve and update an Arch Linux system
+#          (repos + AUR + Flatpak), like Shelly's "update all", but it
+#          predicts the failures before touching anything and fixes these
+#          common Arch update problems:
+#
+#   * NVIDIA module package pinned/stale vs nvidia-utils  -> "breaks dependency
+#     'nvidia-utils=X' required by linux-*-nvidia-open"   (predicted + explained)
+#   * kernel updated without reboot -> running kernel's modules deleted
+#     (usb-storage won't load)                             (detected + kernel-modules-hook)
+#   * NVIDIA/DKMS module missing for some installed kernels (stock linux, lts...)
+#                                                          (headers + dkms autoinstall)
+#   * -Syuu downgrading CachyOS-built leftovers (pahole -> linux-cachyos-headers)
+#                                                          (-Syu by default, -Syuu dry-run first)
+#   * packages that exist in no repo and not in the AUR (stale leftovers)
+#   * IgnorePkg pins that only cover part of a package set (partial upgrades)
+#   * stale pacman lock, low disk space, Arch news (manual interventions),
+#     snapshots before updating, GRUB entries after kernel changes,
+#     AUR rebuilds after library bumps, .pacnew files, orphans, cache, failed units
+#
+# Usage: archup [--check] [--yes] [--mirrors] [--no-aur] [--no-flatpak]
+#               [--no-snapshot] [--help]
+#
+# Run as your normal user; it calls sudo itself.
+
+set -uo pipefail
+shopt -s nullglob
+
+readonly VERSION="1.1.2"
+readonly SELF=${0##*/}
+
+# ------------------------------------------------------------------ settings
+# Override in ~/.config/archup/archup.conf (KEY=value lines; parsed, never sourced).
+AUR_HELPER=paru
+# packages you never want (space-separated globs, e.g. "linux-cachyos*"):
+# skipped by every check, flagged if installed
+EXCLUDE_PKGS=""
+# add your region in archup.conf, e.g. "--country Italy,Germany --protocol https ..."
+REFLECTOR_ARGS="--protocol https --age 12 --latest 20 --sort rate"
+KEEP_CACHE=3          # package versions kept in the pacman cache (you downgrade from it!)
+MIN_ROOT_MB=3072
+MIN_BOOT_MB=150
+DO_AUR=1
+DO_FLATPAK=1
+DO_SNAPSHOT=1
+DO_MIRRORS=0
+CHECK_ONLY=0
+ASSUME_YES=0
+
+CONF=${XDG_CONFIG_HOME:-$HOME/.config}/archup/archup.conf
+STATE_DIR=${XDG_STATE_HOME:-$HOME/.local/state}/archup
+LOG=/dev/null
+
+# ------------------------------------------------------------------- state
+declare -A KPKG=()        # kernel version -> pkgbase
+WARNINGS=() PROBLEMS=() BLOCKERS=() REBOOT_REASONS=()
+REPO_UPD=() REPO_UPD_NAMES=() AUR_UPD=() FP_UPD=()
+IGNORED=() FOREIGN=() ORPHAN_FOREIGN=() NEWER=()
+NV_MISMATCH=() NV_NOMOD=() DKMS_MISSING=() DKMS_NOHDR=()
+PACNEW=() ORPHANS=() FAILED_UNITS=()
+CU_DB="" STALE_LOCK="" SYU="-Syu" NEWS=0 HOOK_MISSING=0 SUDO_PID=""
+BOOT_BEFORE=""
+
+# ------------------------------------------------------------------ output
+if [[ -t 1 ]]; then
+  B=$'\e[1m' R=$'\e[31m' G=$'\e[32m' Y=$'\e[33m' D=$'\e[2m' N=$'\e[0m'
+else
+  B="" R="" G="" Y="" D="" N=""
+fi
+
+log()     { printf '%s\n' "$*" | sed 's/\x1b\[[0-9;]*m//g' >>"$LOG"; }
+say()     { printf '%s\n' "$*"; log "$*"; }
+ok()      { say "  ${G}✓${N} $*"; }
+info()    { say "  · $*"; }
+warn()    { say "  ${Y}!${N} $*"; WARNINGS+=("$*"); }
+bad()     { say "  ${R}✗${N} $*"; PROBLEMS+=("$*"); }
+section() { say ""; say "${B}== $* ==${N}"; }
+indent()  { local l; while IFS= read -r l; do [[ -n $l ]] && say "      $l"; done; }
+
+has()       { command -v "$1" &>/dev/null; }
+installed() { pacman -Qq "$1" &>/dev/null; }
+in_list()   { local x=$1 e; shift; for e; do [[ $e == "$x" ]] && return 0; done; return 1; }
+is_ignored(){ in_list "$1" "${IGNORED[@]}"; }
+is_excluded(){
+  local pats=() pat
+  read -ra pats <<<"$EXCLUDE_PKGS"   # read, not word-splitting: no glob expansion
+  # shellcheck disable=SC2053  # $pat is meant as a glob
+  for pat in "${pats[@]}"; do [[ $1 == $pat ]] && return 0; done
+  return 1
+}
+sdb()       { pacman --dbpath "$CU_DB" "$@"; }   # query the freshly synced (temp) db
+# dry run (print mode: no root, no lock). On failure print why: pacman puts the
+# ":: ... breaks dependency ..." details on stdout, among the package URLs.
+sdb_dry()   { local out; out=$(sdb "$@" --noconfirm 2>&1) && return 0; grep -vE '^[a-z]+://' <<<"$out"; return 1; }
+
+# ask "question" y|n  -> 0 = yes
+ask() {
+  local q=$1 def=${2:-n} a hint='[y/N]'
+  (( CHECK_ONLY )) && return 1
+  [[ $def == y ]] && hint='[Y/n]'
+  if (( ASSUME_YES )); then
+    log "  ? $q -> $def (--yes)"
+    [[ $def == y ]]; return
+  fi
+  read -rp "  ${B}?${N} $q $hint " a </dev/tty || a=""
+  a=${a:-$def}
+  log "  ? $q -> $a"
+  [[ ${a,,} == y* ]]
+}
+
+# run a command that changes the system (shown + logged)
+run() { say "  ${D}\$ $*${N}"; "$@"; }
+
+# ------------------------------------------------------------------ setup
+usage() {
+  cat <<EOF
+$SELF $VERSION — check, resolve and update Arch (repos + AUR + Flatpak)
+
+  --check        only gather info and predict problems; change nothing
+  --yes          accept the default answer to every question
+                 (blockers and Arch news default to "stop")
+  --mirrors      refresh the mirrorlist with reflector first
+  --no-aur       skip AUR packages
+  --no-flatpak   skip Flatpak
+  --no-snapshot  don't take a snapper snapshot before updating
+  -h, --help     this help
+
+Config: $CONF  (KEY=value: AUR_HELPER, REFLECTOR_ARGS,
+        EXCLUDE_PKGS, KEEP_CACHE, MIN_ROOT_MB, MIN_BOOT_MB, DO_AUR, DO_FLATPAK,
+        DO_SNAPSHOT, DO_MIRRORS)
+Logs:   $STATE_DIR/
+EOF
+}
+
+load_conf() {
+  [[ -f $CONF ]] || return 0
+  local key val
+  while IFS='=' read -r key val; do
+    key=${key//[[:space:]]/}
+    [[ -z $key || $key == \#* ]] && continue
+    val="${val#"${val%%[![:space:]]*}"}"; val="${val%"${val##*[![:space:]]}"}"
+    val=${val#\"}; val=${val%\"}; val=${val#\'}; val=${val%\'}
+    case $key in
+      AUR_HELPER|EXCLUDE_PKGS|REFLECTOR_ARGS|KEEP_CACHE|MIN_ROOT_MB|MIN_BOOT_MB|DO_AUR|DO_FLATPAK|DO_SNAPSHOT|DO_MIRRORS)
+        printf -v "$key" '%s' "$val" ;;
+      *) echo "$SELF: ignoring unknown key '$key' in $CONF" >&2 ;;
+    esac
+  done <"$CONF"
+}
+
+parse_args() {
+  while (($#)); do
+    case $1 in
+      --check)       CHECK_ONLY=1 ;;
+      --yes|-y)      ASSUME_YES=1 ;;
+      --mirrors)     DO_MIRRORS=1 ;;
+      --no-aur)      DO_AUR=0 ;;
+      --no-flatpak)  DO_FLATPAK=0 ;;
+      --no-snapshot) DO_SNAPSHOT=0 ;;
+      -h|--help)     usage; exit 0 ;;
+      *) echo "$SELF: unknown option $1" >&2; usage >&2; exit 2 ;;
+    esac
+    shift
+  done
+}
+
+preflight() {
+  if [[ $EUID -eq 0 ]]; then
+    echo "Run $SELF as your normal user; it uses sudo itself (AUR helpers refuse to run as root)." >&2
+    exit 1
+  fi
+  [[ -f /etc/arch-release ]] || { echo "Not an Arch Linux system." >&2; exit 1; }
+  local t missing=()
+  for t in pacman pacman-conf vercmp python3 checkupdates pacdiff paccache; do
+    has "$t" || missing+=("$t")
+  done
+  if ((${#missing[@]})); then
+    echo "Missing tools: ${missing[*]}  (checkupdates/pacdiff/paccache come from pacman-contrib)" >&2
+    exit 1
+  fi
+  mkdir -p "$STATE_DIR"
+  LOG="$STATE_DIR/$(date +%F_%H%M%S).log"
+  : >"$LOG"
+  # keep the 20 newest logs
+  find "$STATE_DIR" -maxdepth 1 -name '*.log' -printf '%T@ %p\n' | sort -rn | tail -n +21 | cut -d' ' -f2- | xargs -r rm -f
+  (( DO_FLATPAK )) && ! has flatpak && DO_FLATPAK=0
+  return 0
+}
+
+pick_aur_helper() {
+  (( DO_AUR )) || return 0
+  # fall back to yay when paru (the default) isn't installed
+  if [[ $AUR_HELPER == paru ]] && ! has paru && has yay; then AUR_HELPER=yay; fi
+  if ! has "$AUR_HELPER"; then
+    warn "AUR helper '$AUR_HELPER' not found: AUR packages will be skipped"
+    DO_AUR=0
+  fi
+}
+
+start_sudo() {
+  sudo -v || { echo "sudo authentication failed" >&2; exit 1; }
+  # keep the sudo timestamp alive during long builds
+  ( while kill -0 "$$" 2>/dev/null; do sudo -n true 2>/dev/null; sleep 50; done ) &
+  SUDO_PID=$!
+}
+cleanup() { [[ -n $SUDO_PID ]] && kill "$SUDO_PID" 2>/dev/null; return 0; }
+trap cleanup EXIT
+
+# ------------------------------------------------------------------ helpers
+aur_missing() {   # print the given names that do NOT exist in the AUR
+  (($#)) || return 0
+  python3 - "$@" <<'PY'
+import json, sys, urllib.parse, urllib.request
+names = sys.argv[1:]
+found = set()
+try:
+    for i in range(0, len(names), 150):
+        q = urllib.parse.urlencode([("arg[]", n) for n in names[i:i + 150]])
+        with urllib.request.urlopen("https://aur.archlinux.org/rpc/v5/info?" + q, timeout=20) as r:
+            found.update(p["Name"] for p in json.load(r)["results"])
+except Exception as e:
+    print(f"AUR query failed: {e}", file=sys.stderr)
+    sys.exit(1)
+for n in names:
+    if n not in found:
+        print(n)
+PY
+}
+
+arch_news() {     # news items newer than the last full upgrade in pacman.log
+  local last
+  last=$(grep -a 'starting full system upgrade' /var/log/pacman.log 2>/dev/null | tail -n1 | cut -d']' -f1 | tr -d '[')
+  python3 - "$last" <<'PY'
+import sys, urllib.request, xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
+last = sys.argv[1]
+try:
+    since = datetime.strptime(last, "%Y-%m-%dT%H:%M:%S%z")
+except ValueError:
+    since = datetime.now(timezone.utc) - timedelta(days=30)
+try:
+    with urllib.request.urlopen("https://archlinux.org/feeds/news/", timeout=15) as r:
+        root = ET.fromstring(r.read())
+except Exception as e:
+    print(f"ERR {e}")
+    sys.exit(0)
+for it in root.iter("item"):
+    d = parsedate_to_datetime(it.findtext("pubDate"))
+    if d > since:
+        print(f"{d:%Y-%m-%d}  {it.findtext('title')}")
+        print(f"            {it.findtext('link')}")
+PY
+}
+
+scan_kernels() {
+  KPKG=()
+  local d pb
+  for d in /usr/lib/modules/*/; do
+    d=${d%/}
+    [[ -f $d/pkgbase ]] || continue
+    pb=$(<"$d/pkgbase")
+    is_excluded "$pb" || KPKG[${d##*/}]=$pb
+  done
+}
+
+boot_images() { local f; for f in /boot/vmlinuz-*; do echo "$f"; done | sort; }
+
+pkg_ver()  { pacman -Q "$1" 2>/dev/null | awk '{print $2}'; }
+sync_ver() { sdb -Si "$1" 2>/dev/null | awk -F' *: ' '/^Version/{print $2; exit}'; }
+nv_dep()   { sed -n 's/.*[[:space:]]nvidia-utils=\([^[:space:]]*\).*/\1/p' | head -n1; }
+
+# ------------------------------------------------------------------ checks
+check_excluded() {
+  [[ -n $EXCLUDE_PKGS ]] || return 0
+  local p hits=()
+  while read -r p; do is_excluded "$p" && hits+=("$p"); done < <(pacman -Qq)
+  if ((${#hits[@]})); then
+    bad "excluded packages are installed (EXCLUDE_PKGS=\"$EXCLUDE_PKGS\"): ${hits[*]}"
+    say "      remove them: sudo pacman -Rns ${hits[*]}   then regenerate GRUB"
+    say "      (until then pacman still updates them; archup just ignores them in its checks)"
+  else
+    ok "nothing from the exclude list is installed ($EXCLUDE_PKGS)"
+  fi
+}
+
+check_lock() {
+  local lock
+  lock="$(pacman-conf DBPath)db.lck"
+  if [[ ! -e $lock ]]; then ok "pacman database not locked"; return; fi
+  if pgrep -x 'pacman|paru|yay|shelly|pamac|octopi|packagekitd' >/dev/null; then
+    bad "another package manager is running (database locked) — close it first"
+    BLOCKERS+=("pacman database locked by a running package manager")
+  else
+    warn "stale lock $lock (no package manager running: a crashed or killed update)"
+    STALE_LOCK=$lock
+  fi
+}
+
+check_space() {
+  local avail
+  avail=$(df --output=avail -BM / | tail -n1 | tr -dc 0-9)
+  if (( avail < MIN_ROOT_MB )); then
+    bad "only ${avail} MiB free on / (want ≥ ${MIN_ROOT_MB})"; BLOCKERS+=("low disk space on /")
+  else ok "${avail} MiB free on /"; fi
+  if mountpoint -q /boot; then
+    avail=$(df --output=avail -BM /boot | tail -n1 | tr -dc 0-9)
+    if (( avail < MIN_BOOT_MB )); then
+      bad "only ${avail} MiB free on /boot — initramfs generation can fail"; BLOCKERS+=("low space on /boot")
+      local fb=(/boot/initramfs-*-fallback.img)
+      ((${#fb[@]})) && say "      ${#fb[@]} fallback initramfs images use $(du -ch "${fb[@]}" | tail -n1 | cut -f1): set PRESETS=('default') in /etc/mkinitcpio.d/*.preset and delete them"
+      say "      biggest files: $(du -h /boot/vmlinuz-* /boot/initramfs-* 2>/dev/null | sort -rh | head -n4 | awk '{printf "%s %s  ", $1, $2}')"
+    else ok "${avail} MiB free on /boot"; fi
+  fi
+}
+
+check_updates() {
+  local out rc
+  CU_DB="$STATE_DIR/checkup-db"
+  out=$(CHECKUPDATES_DB="$CU_DB" checkupdates 2>"$STATE_DIR/checkupdates.err"); rc=$?
+  case $rc in
+    0) mapfile -t REPO_UPD <<<"$out" ;;
+    2) REPO_UPD=() ;;
+    *) warn "checkupdates failed (offline or mirror down): $(tail -n1 "$STATE_DIR/checkupdates.err")"
+       CU_DB=$(pacman-conf DBPath); REPO_UPD=() ;;
+  esac
+  mapfile -t REPO_UPD_NAMES < <(printf '%s\n' "${REPO_UPD[@]}" | awk 'NF{print $1}')
+
+  if (( DO_AUR )); then
+    mapfile -t AUR_UPD < <("$AUR_HELPER" -Qua 2>/dev/null | awk 'NF')
+  fi
+  if (( DO_FLATPAK )); then
+    mapfile -t FP_UPD < <(flatpak remote-ls --updates --columns=application 2>/dev/null | awk 'NF' | sort -u)
+  fi
+
+  info "repo updates: ${#REPO_UPD[@]}   AUR: $( ((DO_AUR)) && echo ${#AUR_UPD[@]} || echo skipped)   Flatpak: $( ((DO_FLATPAK)) && echo ${#FP_UPD[@]} || echo skipped)"
+  local crit
+  crit=$(printf '%s\n' "${REPO_UPD[@]}" "${AUR_UPD[@]}" |
+         grep -E '^(linux[^ ]*|[^ ]*nvidia[^ ]*|systemd|glibc|mesa|lib32-mesa|amd-ucode|intel-ucode|grub|mkinitcpio|[^ ]*keyring) ')
+  if [[ -n $crit ]]; then
+    say "  ${B}important updates:${N}"
+    indent <<<"$crit"
+  fi
+}
+
+check_ignored() {
+  mapfile -t IGNORED < <(pacman-conf IgnorePkg)
+  ((${#IGNORED[@]})) || { ok "no IgnorePkg pins"; return; }
+  local held
+  mapfile -t held < <(sdb -Qu 2>/dev/null | awk '/\[ignored\]/{print $1}')
+  if ((${#held[@]})); then
+    warn "IgnorePkg is holding back: ${held[*]} — this is a partial upgrade; drop the pin once its reason is fixed"
+  else
+    info "IgnorePkg pins (nothing held back right now): ${IGNORED[*]}"
+  fi
+  # pins must cover a whole family, or pacman breaks (what happened with the NVIDIA downgrade)
+  local fam=() p pinned=() free=()
+  for p in nvidia-utils lib32-nvidia-utils opencl-nvidia lib32-opencl-nvidia nvidia-settings \
+           $(pacman -Qq | grep -E '^(nvidia(-open)?(-dkms|-lts)?|.+-nvidia(-open)?)$'); do
+    installed "$p" && fam+=("$p")
+  done
+  for p in "${fam[@]}"; do if is_ignored "$p"; then pinned+=("$p"); else free+=("$p"); fi; done
+  if ((${#pinned[@]})) && ((${#free[@]})); then
+    bad "NVIDIA packages only partly pinned — pinned: ${pinned[*]} / not pinned: ${free[*]}. Pin all or none."
+  fi
+}
+
+dry_run() {
+  local err
+  ((${#REPO_UPD[@]})) || return 0
+  if err=$(sdb_dry -Sup); then
+    ok "dry run: 'pacman -Syu' resolves cleanly"
+  else
+    bad "dry run: 'pacman -Syu' would FAIL right now:"
+    indent <<<"$err"
+    BLOCKERS+=("pacman -Syu would fail (see dry run)")
+  fi
+}
+
+check_kernels() {
+  local rk kver pb repo hdr mark
+  rk=$(uname -r)
+  if ! ((${#KPKG[@]})) && [[ -z $(compgen -G '/usr/lib/modules/*/pkgbase') ]]; then
+    info "no kernel package installed (container or chroot?): skipping kernel checks"
+    return 0
+  fi
+  if [[ -d /usr/lib/modules/$rk ]]; then
+    ok "running kernel $rk has its modules on disk"
+  else
+    bad "running kernel $rk has NO modules on disk — it was updated without a reboot (USB storage, new filesystems etc. won't load). Reboot first."
+    REBOOT_REASONS+=("running kernel's modules are gone")
+    BLOCKERS+=("reboot pending from a previous kernel update")
+  fi
+  [[ $rk == *-rc* ]] && warn "running a release-candidate kernel ($rk); a stable kernel is safer as a daily driver and VM host"
+  for kver in "${!KPKG[@]}"; do
+    pb=${KPKG[$kver]}; mark=""
+    [[ $kver == "$rk" ]] && mark=" ${B}(running)${N}"
+    repo=$(sdb -Si "$pb" 2>/dev/null | awk -F' *: ' '/^Repository/{print $2; exit}')
+    if [[ -e /usr/lib/modules/$kver/build ]]; then hdr="headers ok"; else hdr="no headers"; fi
+    if [[ -n $repo ]]; then ok "$pb $kver$mark — [$repo], $hdr"
+    else info "$pb $kver$mark — not in a repo (AUR/manual), $hdr"; fi
+  done
+  (( ${#KPKG[@]} > 2 )) && info "${#KPKG[@]} kernels installed: every extra kernel needs its own headers + NVIDIA/DKMS modules"
+  return 0
+}
+
+check_foreign() {
+  mapfile -t FOREIGN < <(pacman -Qqm)
+  if ! ((${#FOREIGN[@]})); then ok "no foreign (AUR/manual) packages"; return; fi
+  info "${#FOREIGN[@]} foreign packages (AUR or manually installed)"
+  # pkg-debug = debug symbols split off by makepkg's "debug" option, never in the AUR
+  local p dbg=() rest=()
+  for p in "${FOREIGN[@]}"; do
+    if [[ $p == *-debug ]]; then dbg+=("$p"); else rest+=("$p"); fi
+  done
+  if ((${#dbg[@]})); then
+    warn "${#dbg[@]} debug-symbol packages from AUR builds (wasted space): ${dbg[*]}"
+    say "      remove them and add !debug to OPTIONS in /etc/makepkg.conf to stop new ones"
+  fi
+  ((${#rest[@]})) || return 0
+  local out
+  if out=$(aur_missing "${rest[@]}"); then
+    mapfile -t ORPHAN_FOREIGN < <(awk 'NF' <<<"$out")
+    if ((${#ORPHAN_FOREIGN[@]})); then
+      bad "in no repo and not in the AUR — these will never update: ${ORPHAN_FOREIGN[*]}"
+      say "      (typical CachyOS/Chaotic leftovers or dropped AUR packages: replace or remove them)"
+    else ok "every foreign package exists in the AUR"; fi
+  else
+    warn "couldn't reach the AUR to verify foreign packages"
+  fi
+}
+
+check_newer_than_repo() {
+  NEWER=()
+  local name rv iv
+  while read -r name rv iv; do
+    (( $(vercmp "$iv" "$rv") > 0 )) && ! is_ignored "$name" && NEWER+=("$name $iv (repo: $rv)")
+  done < <(sdb -Sl 2>/dev/null | awk '!seen[$2]++ && $4=="[installed:" {v=$5; sub(/\]$/,"",v); print $2, $3, v}')
+  if ((${#NEWER[@]})); then
+    warn "${#NEWER[@]} packages are newer than the repos (old CachyOS builds, testing or manual installs)"
+    printf '%s\n' "${NEWER[@]:0:15}" | indent
+    (( ${#NEWER[@]} > 15 )) && say "      … and $(( ${#NEWER[@]} - 15 )) more (see log)"
+    log "$(printf '      %s\n' "${NEWER[@]}")"
+    say "      -Syu leaves them alone; -Syuu would downgrade them and can break dependents"
+    say "      (e.g. a leftover CachyOS pahole -> 'unable to satisfy dependency' for linux-cachyos-headers)."
+  else
+    ok "no installed package is newer than its repo version"
+  fi
+}
+
+check_nv_modules() {
+  NV_NOMOD=()
+  local kver
+  for kver in "${!KPKG[@]}"; do
+    if [[ -n $(find "/usr/lib/modules/$kver" -name 'nvidia.ko*' -print -quit 2>/dev/null) ]]; then
+      ok "NVIDIA module present for ${KPKG[$kver]} ($kver)"
+    else
+      bad "no NVIDIA module for ${KPKG[$kver]} ($kver) — booting it gives you no NVIDIA GPU"
+      NV_NOMOD+=("$kver")
+    fi
+  done
+  if ((${#NV_NOMOD[@]})); then
+    if installed nvidia-open-dkms || installed nvidia-dkms; then
+      local k nohdr=() hdr=()
+      for k in "${NV_NOMOD[@]}"; do
+        if [[ -e /usr/lib/modules/$k/build ]]; then hdr+=("$k"); else nohdr+=("$k"); fi
+      done
+      ((${#nohdr[@]})) && say "      → no headers for ${nohdr[*]}: archup installs them after the update"
+      ((${#hdr[@]})) && say "      → headers exist for ${hdr[*]}, so the DKMS build failed or never ran; archup retries after the update and 'sudo dkms autoinstall -k <kernel>' shows the error"
+    else
+      say "      → you use prebuilt per-kernel modules; nvidia-open-dkms + headers covers every kernel"
+    fi
+  fi
+}
+
+check_nvidia() {
+  installed nvidia-utils || { info "NVIDIA proprietary driver not installed"; return 0; }
+  local target req p loaded up
+  if is_ignored nvidia-utils; then target=$(pkg_ver nvidia-utils)
+  else target=$(sync_ver nvidia-utils); [[ -n $target ]] || target=$(pkg_ver nvidia-utils); fi
+
+  # prebuilt module packages pin nvidia-utils to an exact version
+  local mods=()
+  mapfile -t mods < <(pacman -Qq | grep -E '^(nvidia(-open)?(-lts)?|.+-nvidia(-open)?)$')
+  for p in "${mods[@]}"; do
+    req=""
+    is_ignored "$p" || req=$(sdb -Si "$p" 2>/dev/null | nv_dep)
+    [[ -n $req ]] || req=$(pacman -Qi "$p" | nv_dep)
+    [[ -n $req ]] || continue
+    if [[ $req == "$target" || $req == "${target%-*}" ]]; then
+      ok "$p matches nvidia-utils ${target%-*}"
+    else
+      bad "$p needs nvidia-utils=$req but nvidia-utils will be ${target%-*} — the upgrade will fail"
+      NV_MISMATCH+=("$p")
+      BLOCKERS+=("NVIDIA module package out of sync with nvidia-utils")
+    fi
+  done
+  if installed lib32-nvidia-utils; then
+    local l32
+    if is_ignored lib32-nvidia-utils; then l32=$(pkg_ver lib32-nvidia-utils); else l32=$(sync_ver lib32-nvidia-utils); fi
+    [[ -n $l32 && ${l32%-*} != "${target%-*}" ]] && \
+      bad "lib32-nvidia-utils (${l32%-*}) ≠ nvidia-utils (${target%-*}) — 32-bit games/Steam will break"
+  fi
+
+  check_nv_modules
+
+  if [[ -r /proc/driver/nvidia/version ]]; then
+    loaded=$(grep -oE '[0-9]{3}\.[0-9]+(\.[0-9]+)?' /proc/driver/nvidia/version | head -n1)
+    up=$(pkg_ver nvidia-utils); up=${up%-*}
+    [[ -n $loaded && $loaded != "$up" ]] && {
+      warn "loaded NVIDIA module $loaded ≠ installed nvidia-utils $up (reboot pending)"
+      REBOOT_REASONS+=("NVIDIA kernel module and userspace differ"); }
+  fi
+  return 0
+}
+
+check_dkms() {
+  DKMS_MISSING=() DKMS_NOHDR=()
+  has dkms || return 0
+  local mods=() m kver
+  mapfile -t mods < <(dkms status 2>/dev/null | awk -F'[,:]' 'NF{print $1}' | sort -u |
+                      sort -t/ -k1,1 -k2,2V | awk -F/ '{last[$1]=$0} END{for (k in last) print last[k]}')
+  ((${#mods[@]})) || return 0
+  for kver in "${!KPKG[@]}"; do
+    if [[ ! -e /usr/lib/modules/$kver/build ]]; then
+      bad "${KPKG[$kver]} ($kver) has no headers: DKMS modules (${mods[*]}) can't build for it"
+      DKMS_NOHDR+=("$kver"); continue
+    fi
+    for m in "${mods[@]}"; do
+      if ! dkms status -m "${m%%/*}" -v "${m#*/}" -k "$kver" 2>/dev/null | grep -q ': installed'; then
+        bad "DKMS module $m is not built for $kver"
+        in_list "$kver" "${DKMS_MISSING[@]}" || DKMS_MISSING+=("$kver")
+      fi
+    done
+  done
+  (( ${#DKMS_MISSING[@]} + ${#DKMS_NOHDR[@]} )) || ok "DKMS modules (${mods[*]}) built for every kernel"
+}
+
+check_news() {
+  local out
+  out=$(arch_news)
+  if [[ $out == ERR* ]]; then warn "couldn't fetch Arch news (${out#ERR })"; return; fi
+  if [[ -n $out ]]; then
+    bad "Arch news since your last full upgrade — read it, manual interventions are announced there:"
+    indent <<<"$out"
+    NEWS=1
+  else
+    ok "no Arch news since your last full upgrade"
+  fi
+}
+
+check_hygiene() {
+  if [[ -z $(compgen -G '/usr/lib/modules/*/pkgbase') ]]; then
+    :   # no kernel installed (container/chroot): nothing to protect
+  elif installed kernel-modules-hook; then
+    ok "kernel-modules-hook installed (running kernel keeps its modules across updates)"
+  else
+    warn "kernel-modules-hook missing: a kernel update without reboot deletes the running kernel's modules"
+    HOOK_MISSING=1
+  fi
+  if installed snap-pac; then ok "snap-pac takes snapshots around every pacman transaction"
+  elif has snapper && [[ -f /etc/snapper/configs/root ]]; then ok "snapper root config found (archup will snapshot before updating)"
+  else warn "no snapper root config: updates run without a rollback snapshot"; fi
+  mapfile -t PACNEW < <(pacdiff -o 2>/dev/null)
+  ((${#PACNEW[@]})) && warn "${#PACNEW[@]} unmerged .pacnew/.pacsave files: ${PACNEW[*]}"
+  mapfile -t ORPHANS < <(pacman -Qdtq 2>/dev/null)
+  ((${#ORPHANS[@]})) && info "${#ORPHANS[@]} orphaned dependencies: ${ORPHANS[*]}"
+  mapfile -t FAILED_UNITS < <(systemctl --failed --no-legend --plain 2>/dev/null | awk '{print $1}')
+  ((${#FAILED_UNITS[@]})) && warn "failed systemd units: ${FAILED_UNITS[*]}"
+  return 0
+}
+
+# ------------------------------------------------------------------ resolve
+explain_nv_mismatch() {
+  ((${#NV_MISMATCH[@]})) || return 0
+  say "  ${B}How to fix the NVIDIA mismatch:${N}"
+  local p
+  for p in "${NV_MISMATCH[@]}"; do
+    if in_list "$p" "${ORPHAN_FOREIGN[@]}" || ! sdb -Si "$p" &>/dev/null; then
+      say "      $p comes from no repo any more: remove it (sudo pacman -Rdd $p) and use nvidia-open-dkms + headers"
+    elif is_ignored "$p" || is_ignored nvidia-utils; then
+      say "      $p and nvidia-utils are pinned differently: pin the whole NVIDIA set in IgnorePkg, or unpin all of it"
+    else
+      say "      the repo hasn't rebuilt $p for the new driver yet: wait a few hours, or pin the NVIDIA set for now"
+    fi
+  done
+}
+
+resolve_pre() {
+  section "Resolve before updating"
+  if [[ -n $STALE_LOCK ]] && ask "Remove stale lock $STALE_LOCK?" y; then
+    run sudo rm -f "$STALE_LOCK"
+    BLOCKERS=("${BLOCKERS[@]/pacman database locked*/}")
+  fi
+
+  if ((${#NEWER[@]})) && ask "Bring the ${#NEWER[@]} newer-than-repo packages back to repo versions (-Syuu)?" n; then
+    local err
+    if err=$(sdb_dry -Suup); then
+      SYU="-Syuu"; ok "dry run of -Syuu is clean: will use it"
+    else
+      bad "-Syuu would fail, staying on -Syu:"; indent <<<"$err"
+      say "      remove the packages that need the newer versions first (usually a leftover linux-cachyos* kernel)"
+    fi
+  fi
+
+  explain_nv_mismatch
+
+  if (( NEWS )) && ! ask "You've read the Arch news above. Continue?" n; then
+    say "Stopped. Re-run after reading the news."; return 1
+  fi
+
+  local b blk=()
+  for b in "${BLOCKERS[@]}"; do [[ -n $b ]] && blk+=("$b"); done
+  if ((${#blk[@]})); then
+    say "  ${R}${B}Blockers:${N}"
+    printf '%s\n' "${blk[@]}" | indent
+    if ! ask "Update anyway? (pacman aborts safely if the transaction can't be satisfied)" n; then
+      say "Stopped before changing anything. Log: $LOG"; return 1
+    fi
+  fi
+  return 0
+}
+
+# ------------------------------------------------------------------ update
+refresh_mirrors() {
+  (( DO_MIRRORS )) || return 0
+  has reflector || { warn "reflector not installed: skipping mirror refresh"; return 0; }
+  local ra=()
+  read -ra ra <<<"$REFLECTOR_ARGS"
+  run sudo cp /etc/pacman.d/mirrorlist /etc/pacman.d/mirrorlist.archup.bak
+  if ! run sudo reflector "${ra[@]}" --save /etc/pacman.d/mirrorlist; then
+    warn "reflector failed; restoring the previous mirrorlist"
+    run sudo cp /etc/pacman.d/mirrorlist.archup.bak /etc/pacman.d/mirrorlist
+  fi
+}
+
+snapshot() {
+  (( DO_SNAPSHOT )) || return 0
+  installed snap-pac && return 0
+  if has snapper && [[ -f /etc/snapper/configs/root ]]; then
+    run sudo snapper -c root create -c number -d "archup pre-update" &&
+      ok "snapshot created (bootable from GRUB if grub-btrfs is installed)"
+  fi
+  return 0
+}
+
+do_update() {
+  section "Update"
+  refresh_mirrors
+  BOOT_BEFORE=$(boot_images)
+  snapshot
+
+  # keyrings first, so packages signed with new keys verify
+  local kr=() k
+  for k in archlinux-keyring chaotic-keyring; do
+    installed "$k" && in_list "$k" "${REPO_UPD_NAMES[@]}" && kr+=("$k")
+  done
+  if ((${#kr[@]})); then
+    run sudo pacman -Sy --needed --noconfirm "${kr[@]}" || { bad "keyring update failed"; return 1; }
+  fi
+
+  if ((${#REPO_UPD[@]})) || [[ $SYU == -Syuu ]]; then
+    if ! run sudo pacman "$SYU"; then
+      bad "pacman upgrade failed or was cancelled — not continuing with AUR/Flatpak"
+      return 1
+    fi
+  else
+    ok "repo packages already up to date"
+  fi
+  CU_DB=$(pacman-conf DBPath)   # from here on the system db is the fresh one
+
+  if (( DO_AUR )); then
+    if ((${#AUR_UPD[@]})); then
+      run "$AUR_HELPER" -Sua || warn "some AUR updates failed (see output above)"
+    else ok "AUR packages already up to date"; fi
+  fi
+
+  if (( DO_FLATPAK )); then
+    if ((${#FP_UPD[@]})); then run flatpak update -y || warn "flatpak update had errors"
+    else ok "Flatpaks already up to date"; fi
+    run flatpak uninstall --unused -y >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+
+# ------------------------------------------------------------------ after
+install_headers() {
+  local kver pb h kv hv
+  for kver in "${DKMS_NOHDR[@]}"; do
+    pb=${KPKG[$kver]:-}; [[ -n $pb ]] || continue
+    h="$pb-headers"; kv=$(pkg_ver "$pb"); hv=$(sync_ver "$h")
+    if [[ -n $hv && $hv == "$kv" ]]; then
+      ask "Install $h $hv so DKMS modules build for $pb?" y && run sudo pacman -S --needed "$h"
+    elif [[ -z $hv ]] && (( DO_AUR )) && [[ -z $(aur_missing "$h" 2>/dev/null) ]]; then
+      ask "Install $h from the AUR for $pb?" y && run "$AUR_HELPER" -S --needed "$h"
+    else
+      bad "no headers matching $pb $kv are available (repo has: ${hv:-none}) — update or remove that kernel"
+    fi
+  done
+}
+
+post_update() {
+  section "After the update"
+  scan_kernels
+
+  # stop the "kernel updated, running modules deleted" problem from coming back
+  if (( HOOK_MISSING )) && ask "Install kernel-modules-hook (keeps the running kernel's modules after updates)?" y; then
+    run sudo pacman -S --needed kernel-modules-hook &&
+      run sudo systemctl enable --now linux-modules-cleanup.service
+  fi
+
+  # headers + DKMS for every installed kernel
+  check_dkms
+  install_headers
+  check_dkms
+  local kver
+  for kver in "${DKMS_MISSING[@]}"; do
+    if ask "Build missing DKMS modules for $kver?" y && ! run sudo dkms autoinstall -k "$kver"; then
+      local logf
+      logf=$(sudo sh -c "ls -t /var/lib/dkms/*/*/$kver/*/log/make.log /var/lib/dkms/*/*/build/make.log 2>/dev/null | head -n1")
+      bad "DKMS build failed for $kver${logf:+ — last lines of $logf:}"
+      [[ -n $logf ]] && sudo tail -n 15 "$logf" | indent
+    fi
+  done
+  ((${#DKMS_MISSING[@]})) && check_dkms
+  installed nvidia-utils && check_nv_modules
+
+  # GRUB only needs regenerating when kernels were added/removed
+  if [[ $(boot_images) != "$BOOT_BEFORE" && -f /boot/grub/grub.cfg ]] && has grub-mkconfig; then
+    ask "Kernels changed in /boot. Regenerate GRUB menu?" y && run sudo grub-mkconfig -o /boot/grub/grub.cfg
+  fi
+
+  # AUR packages linked against libraries that just changed
+  if has checkrebuild && (( DO_AUR )); then
+    local rb=()
+    mapfile -t rb < <(checkrebuild 2>/dev/null | awk '$1=="foreign"{print $2}')
+    if ((${#rb[@]})); then
+      warn "AUR packages broken by library updates: ${rb[*]}"
+      ask "Rebuild them now?" y && run "$AUR_HELPER" -S --rebuild "${rb[@]}"
+    else ok "no AUR package needs a rebuild"; fi
+  fi
+
+  mapfile -t PACNEW < <(pacdiff -o 2>/dev/null)
+  if ((${#PACNEW[@]})); then
+    warn "config files to merge: ${PACNEW[*]}"
+    local diffprog=vimdiff; has meld && diffprog=meld
+    ask "Merge them now with pacdiff ($diffprog)?" n && run sudo DIFFPROG="$diffprog" pacdiff
+  fi
+
+  mapfile -t ORPHANS < <(pacman -Qdtq 2>/dev/null)
+  if ((${#ORPHANS[@]})); then
+    info "orphaned dependencies: ${ORPHANS[*]}"
+    ask "Remove them (pacman -Rns)?" n && run sudo pacman -Rns "${ORPHANS[@]}"
+  fi
+
+  if ask "Trim the package cache to the last $KEEP_CACHE versions (keeps enough to downgrade)?" y; then
+    run sudo paccache -rk"$KEEP_CACHE" && run sudo paccache -ruk0
+  fi
+
+  mapfile -t FAILED_UNITS < <(systemctl --failed --no-legend --plain 2>/dev/null | awk '{print $1}')
+  ((${#FAILED_UNITS[@]})) && warn "failed systemd units: ${FAILED_UNITS[*]}  (journalctl -b -u <unit>)"
+
+  # reboot?
+  if ((${#KPKG[@]})) && [[ ! -d /usr/lib/modules/$(uname -r) ]]; then
+    REBOOT_REASONS+=("running kernel was updated")
+  fi
+  local n
+  for n in "${REPO_UPD_NAMES[@]}"; do
+    if [[ $n =~ ^(linux.*|.*nvidia.*|systemd|glibc|amd-ucode|intel-ucode|mesa)$ ]]; then
+      REBOOT_REASONS+=("$n updated"); 
+    fi
+  done
+}
+
+final_summary() {
+  section "Summary"
+  local r
+  if ((${#REBOOT_REASONS[@]})); then
+    say "  ${Y}${B}Reboot recommended:${N} $(printf '%s\n' "${REBOOT_REASONS[@]}" | sort -u | paste -sd, - | sed 's/,/, /g')"
+  fi
+  say "  problems: ${#PROBLEMS[@]}   warnings: ${#WARNINGS[@]}"
+  for r in "${PROBLEMS[@]}"; do say "    ${R}✗${N} $r"; done
+  say "  log: $LOG"
+}
+
+# ------------------------------------------------------------------ main
+main() {
+  load_conf
+  parse_args "$@"
+  preflight
+  say "${B}$SELF $VERSION${N}  $(date '+%F %T')  $( ((CHECK_ONLY)) && echo '(check only)')"
+  pick_aur_helper
+
+  section "System";                 check_lock; check_space
+  section "Pending updates";        check_updates; check_ignored; dry_run
+  section "Kernels";                check_excluded; scan_kernels; check_kernels
+  section "Packages outside repos"; check_foreign; check_newer_than_repo
+  section "Drivers & modules";      check_nvidia; check_dkms
+  section "Arch news";              check_news
+  section "Housekeeping";           check_hygiene
+
+  if (( CHECK_ONLY )); then final_summary; exit 0; fi
+
+  start_sudo
+  resolve_pre || { final_summary; exit 1; }
+  do_update   || { final_summary; exit 1; }
+  post_update
+  rm -f "$STATE_DIR/pending"   # the .bashrc notice recounts on the next shell
+  final_summary
+}
+
+main "$@"

@@ -347,6 +347,11 @@ install_dependencies() {
         curl -sSfL https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | sh || \
             print_colored "$YELLOW" "zoxide install failed; skipping."
     fi
+    # Arch: tools used by archup (checkupdates/pacdiff/paccache, checkrebuild, reflector)
+    if [ "$PKG_MGR" = "pacman" ]; then
+        pkg_install pacman-contrib rebuild-detector reflector || true
+    fi
+
     command_exists btop || add_note "btop not available on this distro."
     command_exists duf || add_note "duf not available on this distro (it's a Go tool: 'go install github.com/muesli/duf@latest')."
 }
@@ -538,6 +543,41 @@ copy_bashrc() {
     print_colored "$BLUE" "Put machine-specific settings in ~/.bashrc.local (it's sourced automatically)."
 }
 
+# --- archup: Arch update helper (repos + AUR + Flatpak, checks before it changes anything) ---
+install_archup() {
+    [ "$PKG_MGR" = "pacman" ] || return 0
+    print_colored "$BLUE" "Installing archup..."
+
+    ARCHUP_URL="https://raw.githubusercontent.com/SpikeTheDragon40k/mybashrc/refs/heads/main/bin/archup"
+    target="$HOME/.local/bin/archup"
+    mkdir -p "$HOME/.local/bin"
+
+    if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/bin/archup" ]; then
+        if [ "$BASHRC_MODE" = "auto" ] && [ -d "$SCRIPT_DIR/.git" ]; then
+            # Symlink, like .bashrc: 'git pull' updates it
+            ln -sf "$SCRIPT_DIR/bin/archup" "$target"
+            print_colored "$GREEN" "$target is now a symlink to $SCRIPT_DIR/bin/archup"
+        else
+            rm -f "$target"
+            cp "$SCRIPT_DIR/bin/archup" "$target"
+            chmod 755 "$target"
+            print_colored "$GREEN" "Copied archup to $target"
+        fi
+    elif curl -fsSL "$ARCHUP_URL" -o "$target.new"; then
+        chmod 755 "$target.new"
+        mv "$target.new" "$target"
+        print_colored "$GREEN" "Downloaded archup to $target"
+    else
+        rm -f "$target.new"
+        add_note "Could not download archup."
+        return 0
+    fi
+
+    command_exists paru || command_exists yay || \
+        add_note "archup: install an AUR helper (paru or yay) to update AUR packages too."
+    add_note "Update Arch with 'up' (or 'upc' to only check). Run 'archup --help' for options."
+}
+
 #######################################################
 # LAPTOP / HYBRID GRAPHICS (AMD iGPU + NVIDIA dGPU)
 #######################################################
@@ -648,9 +688,10 @@ install_nvidia_driver() {
                 add_note "CachyOS: use 'sudo chwd -a' to install the NVIDIA driver."
                 return 0
             fi
-            # Stock 'linux' kernel only -> prebuilt module; any other kernel -> dkms + headers
+            # Stock 'linux' kernel only -> prebuilt module; any other kernel -> dkms + headers.
+            # Every installed kernel package (linux-mainline, AUR kernels...) writes its name to pkgbase.
             nv_pkgs="nvidia-utils nvidia-settings nvidia-prime"
-            kernels=$(pacman -Qq 2>/dev/null | grep -E '^linux(-lts|-zen|-hardened|-rt|-cachyos)?$' || true)
+            kernels=$(cat /usr/lib/modules/*/pkgbase 2>/dev/null | sort -u | tr '\n' ' ' | sed 's/ *$//' || true)
             if [ "$kernels" = "linux" ]; then
                 nv_pkgs="nvidia-open $nv_pkgs"
             else
@@ -764,6 +805,7 @@ main() {
     install_starship_and_fzf
     set_starship_preset
     copy_bashrc
+    install_archup
 
     if is_laptop; then
         setup_laptop
