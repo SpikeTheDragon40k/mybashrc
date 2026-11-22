@@ -313,6 +313,38 @@ if command -v nvidia-smi &> /dev/null; then
 fi
 
 #######################################################
+# ARCH UPDATES (archup, installed by setty.sh)
+#######################################################
+
+if command -v archup &> /dev/null; then
+    alias up='archup'               # check, resolve and update repos + AUR + Flatpak
+    alias upc='archup --check'      # report only, changes nothing
+    alias upm='archup --mirrors'    # refresh the mirrorlist first
+    complete -W "--check --yes --mirrors --no-aur --no-flatpak --no-snapshot --help" archup up
+
+    # Pending update count on new terminals. It's read from a cache file and
+    # refreshed in the background every 6 h, so a new shell never waits on the network.
+    _archup_notify() {
+        local d="${XDG_STATE_HOME:-$HOME/.local/state}/archup" f n
+        f="$d/pending"
+        mkdir -p "$d"
+        if [ -s "$f" ]; then
+            n=$(<"$f")
+            [ "$n" -gt 0 ] 2> /dev/null && printf '\e[33m::\e[0m %s updates pending, run \e[1mup\e[0m (or \e[1mupc\e[0m to check first)\n' "$n"
+        fi
+        if [ ! -f "$f" ] || [ -n "$(find "$f" -mmin +360 2> /dev/null)" ]; then
+            # own session: no "[1] PID" job message, and no SIGHUP when the terminal closes.
+            # checkupdates exits 0 (updates), 2 (none) or 1 (error: keep the old count).
+            # shellcheck disable=SC2016  # expanded by the child bash
+            setsid -f bash -c 'out=$(checkupdates 2> /dev/null); rc=$?
+                if [ "$rc" -ne 1 ]; then grep -c . <<< "$out" > "$1.tmp"; mv "$1.tmp" "$1"
+                elif [ -f "$1" ]; then touch "$1"; fi' _ "$f" &> /dev/null
+        fi
+    }
+    command -v checkupdates &> /dev/null && _archup_notify
+fi
+
+#######################################################
 # INTEGRATIONS
 #######################################################
 
