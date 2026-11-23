@@ -26,7 +26,7 @@
 set -uo pipefail
 shopt -s nullglob
 
-readonly VERSION="1.1.2"
+readonly VERSION="1.1.3"
 readonly SELF=${0##*/}
 
 # ------------------------------------------------------------------ settings
@@ -58,6 +58,7 @@ REPO_UPD=() REPO_UPD_NAMES=() AUR_UPD=() FP_UPD=()
 IGNORED=() FOREIGN=() ORPHAN_FOREIGN=() NEWER=()
 NV_MISMATCH=() NV_NOMOD=() DKMS_MISSING=() DKMS_NOHDR=()
 PACNEW=() ORPHANS=() FAILED_UNITS=()
+KEPT=()
 CU_DB="" STALE_LOCK="" SYU="-Syu" NEWS=0 HOOK_MISSING=0 SUDO_PID=""
 BOOT_BEFORE=""
 
@@ -70,10 +71,11 @@ fi
 
 log()     { printf '%s\n' "$*" | sed 's/\x1b\[[0-9;]*m//g' >>"$LOG"; }
 say()     { printf '%s\n' "$*"; log "$*"; }
-ok()      { say "  ${G}✓${N} $*"; }
-info()    { say "  · $*"; }
-warn()    { say "  ${Y}!${N} $*"; WARNINGS+=("$*"); }
-bad()     { say "  ${R}✗${N} $*"; PROBLEMS+=("$*"); }
+QUIET=0   # 1 = checks only fill their arrays (used for intermediate re-checks)
+ok()      { ((QUIET)) || say "  ${G}✓${N} $*"; }
+info()    { ((QUIET)) || say "  · $*"; }
+warn()    { ((QUIET)) && return 0; say "  ${Y}!${N} $*"; in_list "$*" "${WARNINGS[@]}" || WARNINGS+=("$*"); }
+bad()     { ((QUIET)) && return 0; say "  ${R}✗${N} $*"; in_list "$*" "${PROBLEMS[@]}" || PROBLEMS+=("$*"); }
 section() { say ""; say "${B}== $* ==${N}"; }
 indent()  { local l; while IFS= read -r l; do [[ -n $l ]] && say "      $l"; done; }
 
@@ -254,11 +256,15 @@ PY
 }
 
 scan_kernels() {
-  KPKG=()
+  KPKG=() KEPT=()
   local d pb
   for d in /usr/lib/modules/*/; do
     d=${d%/}
     [[ -f $d/pkgbase ]] || continue
+    # A module dir whose vmlinuz no package owns is the old running kernel that
+    # kernel-modules-hook restored after an update: not installed any more,
+    # it disappears at the next boot. Don't check it for headers/DKMS/NVIDIA.
+    if ! pacman -Qqo "$d/vmlinuz" &>/dev/null; then KEPT+=("${d##*/}"); continue; fi
     pb=$(<"$d/pkgbase")
     is_excluded "$pb" || KPKG[${d##*/}]=$pb
   done
@@ -709,10 +715,12 @@ post_update() {
       run sudo systemctl enable --now linux-modules-cleanup.service
   fi
 
-  # headers + DKMS for every installed kernel
-  check_dkms
+  ((${#KEPT[@]})) && info "old running kernel ${KEPT[*]} kept by kernel-modules-hook until you reboot (not checked)"
+
+  # headers + DKMS for every installed kernel; only the final check is shown
+  QUIET=1; check_dkms; QUIET=0
   install_headers
-  check_dkms
+  QUIET=1; check_dkms; QUIET=0
   local kver
   for kver in "${DKMS_MISSING[@]}"; do
     if ask "Build missing DKMS modules for $kver?" y && ! run sudo dkms autoinstall -k "$kver"; then
@@ -722,7 +730,7 @@ post_update() {
       [[ -n $logf ]] && sudo tail -n 15 "$logf" | indent
     fi
   done
-  ((${#DKMS_MISSING[@]})) && check_dkms
+  check_dkms
   installed nvidia-utils && check_nv_modules
 
   # GRUB only needs regenerating when kernels were added/removed
@@ -766,6 +774,7 @@ post_update() {
   fi
   local n
   for n in "${REPO_UPD_NAMES[@]}"; do
+    [[ $n == *-headers ]] && continue   # headers only matter for building modules
     if [[ $n =~ ^(linux.*|.*nvidia.*|systemd|glibc|amd-ucode|intel-ucode|mesa)$ ]]; then
       REBOOT_REASONS+=("$n updated"); 
     fi
