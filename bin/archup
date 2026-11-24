@@ -26,7 +26,7 @@
 set -uo pipefail
 shopt -s nullglob
 
-readonly VERSION="1.1.3"
+readonly VERSION="1.1.4"
 readonly SELF=${0##*/}
 
 # ------------------------------------------------------------------ settings
@@ -333,7 +333,17 @@ check_updates() {
   mapfile -t REPO_UPD_NAMES < <(printf '%s\n' "${REPO_UPD[@]}" | awk 'NF{print $1}')
 
   if (( DO_AUR )); then
-    mapfile -t AUR_UPD < <("$AUR_HELPER" -Qua 2>/dev/null | awk 'NF')
+    # IgnorePkg also covers AUR packages (paru and yay respect it): leave those out,
+    # e.g. your own locally built package whose name clashes with an AUR package
+    local line held=() all=()
+    mapfile -t IGNORED < <(pacman-conf IgnorePkg)
+    mapfile -t all < <("$AUR_HELPER" -Qua 2>/dev/null | awk 'NF')
+    AUR_UPD=()
+    for line in "${all[@]}"; do
+      if [[ $line == *'[ignored]'* ]] || is_ignored "${line%% *}"; then held+=("${line%% *}")
+      else AUR_UPD+=("$line"); fi
+    done
+    ((${#held[@]})) && info "AUR updates skipped (IgnorePkg): ${held[*]}"
   fi
   if (( DO_FLATPAK )); then
     mapfile -t FP_UPD < <(flatpak remote-ls --updates --columns=application 2>/dev/null | awk 'NF' | sort -u)
