@@ -91,5 +91,7 @@ What it checks and fixes:
 - **While updating:** a snapper snapshot (unless snap-pac already takes one), keyrings first, then repos, AUR and Flatpak.
 - **After updating:** missing kernel headers, DKMS rebuilds for every kernel (with the build log on failure), GRUB regeneration when kernels change, AUR packages that need a rebuild, `.pacnew` files, orphans, cache trimming (keeps 3 versions for downgrades), failed units, and whether you should reboot.
 
+Packages you build yourself whose name also exists in the AUR: add them to `IgnorePkg` in `/etc/pacman.conf`. paru and yay then never replace them with the AUR version, and archup leaves them out of its AUR updates.
+
 Settings go in `~/.config/archup/archup.conf` (`KEY=value`, parsed, never sourced), for example `EXCLUDE_PKGS=linux-cachyos*` to keep packages you never want out of the checks. Logs are in `~/.local/state/archup/`.
 
